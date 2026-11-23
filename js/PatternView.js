@@ -650,6 +650,25 @@ export class PatternView {
     this.requestRender(); this._emitView();
   }
 
+  // move the view so world point w shows at css point (x, y) (no turning in 2D)
+  placeAt(w, x, y) {
+    const g = this.model.geo; if (!g) return;
+    const t = this.cssToScreen(x, y);
+    if (g.mode === 'sph') {
+      const r2 = t[0] * t[0] + t[1] * t[1];
+      const T = r2 >= 1 ? [t[0] / Math.sqrt(r2), t[1] / Math.sqrt(r2), 0] : [t[0], t[1], Math.sqrt(1 - r2)];
+      this.view.R = M3.orthonormalize(M3.mul(M3.fromTo(norm3(M3.apply(this.view.R, w)), T), this.view.R));
+    } else if (g.mode === 'hyp') {
+      const l = Math.hypot(t[0], t[1]), tt = l > 0.97 ? C.scale(t, 0.97 / l) : t;
+      const s = Mob.apply(this.view.V, w);
+      this.view.V = Mob.normalize(Mob.mul(Mob.mul(Mob.diskTranslate(tt), Mob.diskTranslate(C.scale(s, -1))), this.view.V));
+    } else {
+      const s = Mob.apply(this.view.V, w);
+      this.view.V = Mob.mul([[1, 0], C.sub(t, s), [0, 0], [1, 0]], this.view.V);
+    }
+    this.requestRender(); this._emitView();
+  }
+
   // zoom by factor f about css point (x, y)
   zoomAt(f, x, y) {
     const g = this.model.geo; if (!g) return;

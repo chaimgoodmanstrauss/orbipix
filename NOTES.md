@@ -79,6 +79,27 @@ Only one is in use at a time; the Mask radio chooses it (`settings.avg`):
   recomputes run at "average all" cost: 27 ms on `*2223` and up to 137 ms on `456` with the image
   over the disk. Redraws are unaffected.
 
+## Clicking a cone or corner keeps it in place (2026-11-23)
+
+Changing an order by click, alt-click or wheel on a cone or corner (`FeatureTool._changeOrder`)
+records where that copy of the point was on screen. After the signature changes it moves the view
+(`PatternView.placeAt`: a disk translation, a plane translation or a sphere rotation; no turning) so
+the same point is there again. That lets you keep clicking the same spot. The clicked copy is followed
+through its reduction word when the domain keeps its face count and geometry; otherwise the domain's
+own copy is brought there. Checked: `233` → `243` → `253` → `263` → `273` → `283` (sphere → plane →
+hyperbolic), then alt-click back to `273`; the point stays within 0.32 px of the click every time.
+
+## Default state and each user's last state (2026-11-23)
+
+- First visit: `DEFAULT_STATE` in `main.js`, from the state Chaim shared: `344`, the duck at
+  c = (−0.018, −0.031), a = 0.282, flat height map. It starts in Pattern mode; the shared state was
+  in Adjust / Move.
+- After that, each browser gets its own last state back (`js/Saved.js`, IndexedDB): the state JSON,
+  the full-precision mask, and the picture if it came from a file (not the duck, not video or camera).
+  Saved 0.5 s after any change: commits, view moves, sliders, checkboxes, mode and tool.
+- On load, the saved state wins unless the URL carries a different `#…` state (a shared link). Then
+  the URL's signature, parameters and placement are used.
+
 ## Decisions
 
 - Undo covers the signature, parameters, comma, image placement and mask (each history entry keeps a

@@ -7,12 +7,21 @@ import { FeatureTool } from './FeatureTool.js';
 import { SignatureEditor } from './SignatureEditor.js';
 import { Scene } from './Scene.js';
 import { MaskGPU } from './MaskGPU.js';
+import * as Saved from './Saved.js';
 import { PRESETS } from './presets.js';
 import { makeDefaultPicture } from './textures.js';
 import * as Sig from './Signature.js';
 
 const $ = s => document.querySelector(s);
-const DEFAULT = '*2223';
+// what a first visit shows (everyone after that gets their own last state back, see Saved.js)
+const DEFAULT_STATE = {
+  signature: '344', params: {}, motif: null,
+  place: { c: [-0.018007841176228945, -0.030922140667925056], a: [0.28210912100031726, 0], flip: false, pole: 1, mode: 'hyp' },
+  settings: { feather: 0.35, avg: 'height', guides: true, showComma: false, brush: 36, strength: 0.35 },
+  mode: 'pattern', tool: 'navigate',
+  view: { mode: 'hyp', V: [[1, 0], [0, 0], [0, 0], [1, 0]], R: [1, 0, 0, 0, 1, 0, 0, 0, 1], zoom: 1, off: [0, 0] },
+  mask: 'domain',
+};
 
 const model = new OrbifoldModel();
 const highlight = new Highlight();
@@ -31,7 +40,19 @@ const snap = () => ({ sig: model.getSignature(), params: model.bad ? (undo[undo.
 const same = (a, b) => a && b && a.sig === b.sig && JSON.stringify(a.params) === JSON.stringify(b.params) && JSON.stringify(a.motif) === JSON.stringify(b.motif)
   && JSON.stringify(a.place) === JSON.stringify(b.place) && a.mask === b.mask && a.avg === b.avg;
 const UNDO_MAX = 60;
+let saveTimer = 0, booted = false;
+function saveSoon() {
+  if (!booted) return;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    if (model.bad || !scene.img) return;
+    const st = collectState(); delete st.maskPng;
+    Saved.set('state', st);
+    Saved.set('mask', scene.maskSnapshot());
+  }, 500);
+}
 function commit() {
+  saveSoon();
   const s = snap();
   if (!same(undo[undo.length - 1], s)) { undo.push(s); if (undo.length > UNDO_MAX) undo.shift(); redo.length = 0; }
   writeHash();
@@ -240,6 +261,7 @@ function setTool(t) {
   tool._setHover?.(null);
   view.requestRender();
   renderHint();
+  saveSoon();
 }
 $('#modes').addEventListener('click', e => { const b = e.target.closest('[data-mode]'); if (b) setMode(b.dataset.mode); });
 $('#tools').addEventListener('click', e => { const b = e.target.closest('[data-tool]'); if (b) setTool(b.dataset.tool); });
@@ -248,7 +270,7 @@ const S = scene.settings;
 function bindSlider(id, key, fmt, after) {
   const el = $('#' + id), out = $('#' + id + '-v');
   el.value = S[key]; out.textContent = fmt(S[key]);
-  el.addEventListener('input', () => { S[key] = +el.value; out.textContent = fmt(S[key]); after?.(); });
+  el.addEventListener('input', () => { S[key] = +el.value; out.textContent = fmt(S[key]); after?.(); saveSoon(); });
 }
 function setBrush(px) { S.brush = Math.min(240, Math.max(4, px)); $('#brush').value = S.brush; $('#brush-v').textContent = Math.round(S.brush) + ' px'; }
 bindSlider('feather', 'feather', v => v.toFixed(2), () => { if (scene.maskMode === 'domain') view.requestRender(); });
@@ -256,8 +278,9 @@ renderMaskState();
 bindSlider('brush', 'brush', v => Math.round(v) + ' px');
 bindSlider('strength', 'strength', v => Math.round(v * 100) + '%');
 document.querySelectorAll('input[name=avg]').forEach(r => r.addEventListener('change', () => { scene.setAveraging(r.value); renderMaskState(); commit(); }));
-$('#guides').addEventListener('change', e => { S.guides = e.target.checked; view.requestRender(); });
-$('#comma').addEventListener('change', e => { S.showComma = e.target.checked; view.requestRender(); });
+$('#guides').addEventListener('change', e => { S.guides = e.target.checked; view.requestRender(); saveSoon(); });
+$('#comma').addEventListener('change', e => { S.showComma = e.target.checked; view.requestRender(); saveSoon(); });
+view.onViewChange(saveSoon);
 $('#mask-reset').onclick = () => { scene.resetMask(); commit(); };
 $('#fit').onclick = () => { scene.fit(); commit(); };
 $('#flip').onclick = () => { scene.flip(); commit(); };
@@ -299,13 +322,14 @@ async function loadFile(file, asMask = false) {
     if (asMask) { scene.maskFromImage(bmp); commit(); return; }
     stopCamera();
     scene.setImage(bmp);
+    Saved.set('image', file);
     commit();
   } catch { $('#hint').textContent = 'That file could not be read as an image.'; }
 }
 $('#file').addEventListener('change', e => { loadFile(e.target.files[0]); e.target.value = ''; });
 $('#mask-file').addEventListener('change', e => { loadFile(e.target.files[0], true); e.target.value = ''; });
 $('#camera').onclick = async () => {
-  if (stream) { stopCamera(); scene.setImage(makeDefaultPicture()); scene.img.isDefault = true; $('#camera').textContent = 'Camera'; return; }
+  if (stream) { stopCamera(); scene.setImage(await duck()); scene.img.isDefault = true; Saved.del('image'); $('#camera').textContent = 'Camera'; return; }
   try {
     stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } });
     const v = document.createElement('video');
@@ -343,20 +367,37 @@ $('#save').onclick = () => {
 };
 
 // ── boot ────────────────────────────────────────────────────────────────
+// ── boot: the user's last state if they have one (unless the URL names a different one), else
+//    the URL's state, else DEFAULT_STATE ──
+async function duck() {
+  try { return await createImageBitmap(await (await fetch('images/duck.png')).blob()); } catch { return makeDefaultPicture(); }
+}
 const fromHash = readHash();
-const start = fromHash && Sig.parse(fromHash.sig) ? fromHash : (() => { const p = PRESETS.find(p => p.signature === DEFAULT); return { sig: p.signature, params: p.params || {} }; })();
-applySignature(start.sig, { params: start.params, motif: start.motif, resetView: true, history: false });
+applySignature(fromHash && Sig.parse(fromHash.sig) ? fromHash.sig : DEFAULT_STATE.signature,
+  { params: fromHash?.params || {}, motif: fromHash?.motif, resetView: true, history: false });
 editor.set(model.getSignature());
-// the default image: the duck (falls back to a drawn landscape if it cannot be loaded)
 (async () => {
-  let pic;
-  try { pic = await createImageBitmap(await (await fetch('images/duck.png')).blob()); } catch { pic = makeDefaultPicture(); }
-  if (!scene.img) {
-    scene.setImage(pic); scene.img.isDefault = true;
-    if (fromHash?.place) scene.setPlace({ ...fromHash.place, mode: model.geo.mode });
+  const saved = await Saved.get('state');
+  const hashNow = location.hash.slice(1), hashSaved = saved?.url?.split('#')[1] || '';
+  const useSaved = saved && saved.app === 'orbipix' && (!hashNow || decodeURIComponent(hashNow) === decodeURIComponent(hashSaved));
+  let pic = null, isDefault = true;
+  if (useSaved && saved.image && !saved.image.default && !saved.image.video) {
+    const blob = await Saved.get('image');
+    if (blob) { try { pic = await createImageBitmap(blob); isDefault = false; } catch {} }
   }
+  if (!pic) pic = await duck();
+  if (!scene.img || scene.img.isDefault) { scene.setImage(pic); scene.img.isDefault = isDefault; }
+  if (useSaved) {
+    await applyState(saved);
+    const m = await Saved.get('mask');
+    if (m && m.mode === 'custom') scene.restoreMask(m);
+  } else if (fromHash && Sig.parse(fromHash.sig)) {
+    if (fromHash.place) scene.setPlace({ ...fromHash.place, mode: model.geo.mode });
+  } else await applyState(DEFAULT_STATE);
   renderMaskState();
   renderStats();
+  undo.length = 0; redo.length = 0;
+  booted = true;
   commit();
 })();
 updateUndoButtons();

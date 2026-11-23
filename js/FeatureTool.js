@@ -295,7 +295,7 @@ export class FeatureTool {
     if (d.kind === 'click' && e.type === 'pointerup') {
       const p = this.model.geo.points[d.hit.index];
       const tk = (p.tokens || []).find(i => ['cone', 'corner'].includes(this.model.tokens[i]?.kind));
-      if (tk !== undefined) this.onOrder(tk, d.alt ? -1 : 1);
+      if (tk !== undefined) this._changeOrder(tk, d.alt ? -1 : 1, d.hit, d.x, d.y);
     } else if (d.kind === 'param' || d.kind === 'handle') {
       this.model.refresh();
       this.onCommit();
@@ -363,6 +363,25 @@ export class FeatureTool {
     sc.dabs(list, d.sign);          // the whole pointer move in one pass
   }
 
+  // change a cone's or corner's order, keeping that point where it was on the screen (so it can
+  // be clicked again and again). The clicked copy is followed through its reduction word when the
+  // domain keeps its faces; otherwise the domain's own copy of the point is brought there.
+  _changeOrder(tk, delta, hit, x, y) {
+    const g0 = this.model.geo, pt0 = g0.points[hit.index];
+    const at = this.view.worldToScreen(hit.probe.word.length ? unreduce(g0, hit.probe.word, pt0.pos) : pt0.pos);
+    const [cx, cy] = at ? this.view.screenToCss(at) : [x, y];
+    this.onOrder(tk, delta);
+    const g = this.model.geo;
+    if (!g || this.model.isBad()) return;
+    const pt = g.points.find(p => (p.tokens || []).includes(tk));
+    if (!pt) return;
+    const same = g.mode === g0.mode && g.faces.length === g0.faces.length;
+    let w = same && hit.probe.word.length ? unreduce(g, hit.probe.word, pt.pos) : pt.pos;
+    if (g.mode === 'hyp' && w[0] * w[0] + w[1] * w[1] >= 0.999) w = pt.pos;
+    this.view.placeAt(w, cx, cy);
+    this._setHover(this.hitTest(cx, cy), cx, cy);
+  }
+
   _startPinch() {
     const [a, b] = [...this.pointers.values()];
     this.drag = null;
@@ -413,7 +432,7 @@ export class FeatureTool {
       this._lastOrderWheel = now;
       const p = this.model.geo.points[hit.index];
       const tk = (p.tokens || []).find(i => ['cone', 'corner'].includes(this.model.tokens[i]?.kind));
-      if (tk !== undefined) this.onOrder(tk, dir);
+      if (tk !== undefined) this._changeOrder(tk, dir, hit, x, y);
       return;
     }
     if (hit && hit.type === 'handle' && this.model.geo.mode === 'euc') {
