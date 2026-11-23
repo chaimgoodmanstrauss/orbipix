@@ -53,17 +53,12 @@ button { font: inherit; color: inherit; }
 
 .pane { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px; min-width: 0; }
 .pane-title { font-size: 13px; font-weight: 600; color: var(--muted); margin: 2px 4px 6px; text-transform: uppercase; letter-spacing: 0.06em; }
-.canvas-wrap { position: relative; width: 100%; aspect-ratio: 1 / 1; max-height: calc(100vh - 200px); border-radius: 8px; overflow: hidden; background: var(--paper); touch-action: none; }
-#pattern, #source, .overlay { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.canvas-wrap { position: relative; width: min(100%, calc(100vh - 150px)); margin: 0 auto; aspect-ratio: 1 / 1; min-width: min(100%, 320px); border-radius: 8px; overflow: hidden; background: var(--paper); touch-action: none; }
+#pattern, .overlay { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 .overlay { pointer-events: none; }
-#pattern, #source { cursor: grab; }
-.canvases { display: grid; gap: 8px; grid-template-columns: 1fr 1fr; }
-.canvases[data-view="pattern"] { grid-template-columns: 1fr; }
-.canvases[data-view="pattern"] .wrap-source, .canvases[data-view="source"] .wrap-pattern { display: none; }
-.canvases[data-view="source"] { grid-template-columns: 1fr; }
-@media (max-width: 600px) { .canvases { grid-template-columns: 1fr; } }
-.wrap-label { position: absolute; left: 8px; top: 8px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); background: rgba(251,250,246,.85); border-radius: 4px; padding: 2px 6px; pointer-events: none; }
-.toolbar { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+#pattern { cursor: grab; }
+.seg[hidden] { display: none; }
+.toolbar { display: flex; justify-content: flex-start; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; flex-wrap: wrap; }
 .seg button { border: 0; background: none; padding: 6px 12px; cursor: pointer; font-size: 13.5px; color: var(--muted); }
 .seg button + button { border-left: 1px solid var(--line); }

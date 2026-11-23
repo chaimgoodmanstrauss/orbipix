@@ -19,7 +19,7 @@
 //   s = ((u − ½)·W/L, (½ − v)·H/L)·2,  L = max(W, H)   (s spans [−1, 1] on the long side)
 //   z = c + a · (flip ? s̄ : s)                          (a: complex, scale + rotation)
 
-import { C, dist2, dot3, apply2, apply3, hypLerp } from './geom.js';
+import { C, dist2, dot3, apply2, apply3, hypLerp, hypDist } from './geom.js';
 
 // ── image plane ↔ world ────────────────────────────────────────────────────
 export function planeOfWorld(mode, w, pole = 1) {
@@ -155,12 +155,14 @@ export function domainDistance(geo, p) {
 }
 export function smoothstep(a, b, x) { const t = Math.min(Math.max((x - a) / (b - a), 0), 1); return t * t * (3 - 2 * t); }
 
+export const MAX_COPIES = 4096;     // the shader loops and textures are sized for this
+
 // ── enumeration ────────────────────────────────────────────────────────────
 // Every element whose tile meets the image, up to `max`. `near` marks tiles
 // close to F (only those can carry weight from a feathered domain mask).
-export function enumerate(geo, place, img, { max = 768 } = {}) {
+export function enumerate(geo, place, img, { max = MAX_COPIES, feather = 0 } = {}) {
   const mode = geo.mode, sph = mode === 'sph';
-  if (!geo.faces.length) return { list: [identity(mode)], truncated: false };
+  if (!geo.faces.length) return { list: [{ ...identity(mode), near: true }], truncated: false, nearCount: 1 };   // no symmetry: one copy
   const gens = faceGenerators(geo);
   const S = domainSamples(geo);
   const c0 = geo.comma.c;
@@ -171,14 +173,16 @@ export function enumerate(geo, place, img, { max = 768 } = {}) {
   const ib = bbox(corners);
   const texel = 2 * C.abs(place.a) / Math.max(img.w, img.h);         // plane units per image pixel
 
-  // tile radius around the comma, for `near`
-  const tileR = sph ? Math.max(0.35, 2.2 * geo.comma.size) : Math.max(...S.map(p => Math.hypot(p[0] - c0[0], p[1] - c0[1])));
-  const hypFromC0 = p => Math.atanh(Math.min(C.abs(C.div(C.sub(p, c0), C.sub([1, 0], C.mul(C.conj(c0), p)))), 0.999999));
-  const radH = mode === 'hyp' ? Math.max(...S.map(hypFromC0)) : 0;
-  const nearTest = q => {
+  // `near`: tiles that come within the feather radius of F (only they get weight from the
+  // domain mask). Tested on boundary samples, with the samples' spacing as slack.
+  const dist = mode === 'hyp' ? hypDist : (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+  let gap = 0;
+  for (let i = 2; i < S.length; i++) if ((i - 1) % 4) gap = Math.max(gap, dist(S[i - 1], S[i]));
+  const reach = feather + gap;
+  const nearTest = T => {
     if (sph) return true;               // finite group, few faces: weigh every tile
-    if (mode === 'hyp') return hypFromC0(q) < 3.2 * radH;
-    return Math.hypot(q[0] - c0[0], q[1] - c0[1]) < 3.2 * tileR;
+    for (const t of T) for (const s of S) if (dist(t, s) < reach) return true;
+    return false;
   };
 
   // start from the tile under the image centre
@@ -195,18 +199,24 @@ export function enumerate(geo, place, img, { max = 768 } = {}) {
   let truncated = false;
   while (queue.length) {
     const E = queue.shift();
-    let ok;
+    let ok, T = null, b = null;
     if (sph) ok = true;
     else {
-      const T = S.map(p => apply2E(E, p));
-      const b = bbox(T);
+      T = S.map(p => apply2E(E, p));
+      b = bbox(T);
       const pad = 0.15 * Math.max(b[2] - b[0], b[3] - b[1]);
       ok = b[0] - pad <= ib[2] && b[2] + pad >= ib[0] && b[1] - pad <= ib[3] && b[3] + pad >= ib[1];
-      if (ok && mode === 'hyp' && Math.max(b[2] - b[0], b[3] - b[1]) < 1.5 * texel) ok = false;    // sub-pixel tiles
+      if (ok && mode === 'hyp' && Math.max(b[2] - b[0], b[3] - b[1]) < texel) ok = false;          // tiles smaller than one image pixel: below the image's resolution
     }
     if (!ok) continue;
-    const q = applyE(mode, E, c0);
-    out.push({ ...E, near: nearTest(q) });
+    // the tile's box in image uv (for skipping copies with no mask weight)
+    let uvBox = null;
+    if (b) {
+      const pad = 0.2 * Math.max(b[2] - b[0], b[3] - b[1]);
+      const us = [[b[0] - pad, b[1] - pad], [b[2] + pad, b[1] - pad], [b[2] + pad, b[3] + pad], [b[0] - pad, b[3] + pad]].map(z => uvOfPlane(place, img, z));
+      uvBox = [Math.min(...us.map(u => u[0])), Math.min(...us.map(u => u[1])), Math.max(...us.map(u => u[0])), Math.max(...us.map(u => u[1]))];
+    }
+    out.push({ ...E, near: nearTest(T), uvBox });
     if (out.length >= max) { truncated = true; break; }
     for (const G of gens) {
       const N = compose(mode, E, G);

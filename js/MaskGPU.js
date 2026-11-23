@@ -70,7 +70,7 @@ void main(){
   outColor = vec4(old, 0., 0., 1.);
   vec2 p; vec3 P;
   if (!worldOfPx(y, p, P) || !foldP(p, P)) return;
-  for (int e = 0; e < 1024; e++) {
+  for (int e = 0; e < 4096; e++) {
     if (e >= uNG) break;
     vec2 q; vec3 Q; float gd;
     applyEl(e, p, P, q, Q, gd);
@@ -82,6 +82,52 @@ void main(){
     else if (uSign < 0.) outColor.r = 1. - n;     // the orbit had all its weight at x: hand back the rest
     return;
   }
+}`;
+
+// max-pooling: each output texel is the max of a 3×3 block of the level below (2i … 2i+2),
+// so odd sizes lose nothing
+const REDUCE = `#version 300 es
+precision highp float; precision highp int;
+uniform sampler2D uSrc;
+out vec4 outColor;
+void main(){
+  ivec2 o = ivec2(gl_FragCoord.xy) * 2, M = textureSize(uSrc, 0) - 1;
+  float m = 0.;
+  for (int j = 0; j < 3; j++) for (int i = 0; i < 3; i++) m = max(m, texelFetch(uSrc, min(o + ivec2(i, j), M), 0).r);
+  outColor = vec4(m, 0., 0., 1.);
+}`;
+
+// which listed copies have any mask weight in their tile's box (texel 2 of the element row):
+// row 0 one flag per copy, row 1 one flag per block of 16 copies (so the pattern can skip blocks)
+const ACTIVE = `#version 300 es
+precision highp float; precision highp int;
+uniform sampler2D uEl, uPyr;
+uniform vec2 uMS;
+uniform int uMode, uLevels, uN;
+out vec4 outColor;
+bool act(int e){
+  if (uMode == 2) return true;
+  vec4 b = texelFetch(uEl, ivec2(2, e), 0) * vec4(uMS, uMS);
+  if (b.z < 0. || b.w < 0. || b.x > uMS.x || b.y > uMS.y) return false;
+  vec2 lo = clamp(b.xy, vec2(0.), uMS - 1.), hi = clamp(b.zw, vec2(0.), uMS - 1.);
+  float ext = max(hi.x - lo.x, hi.y - lo.y);
+  int L = clamp(int(ceil(log2(max(ext, 2.) / 2.))) - 1, 0, uLevels - 1);
+  float s = exp2(float(L + 1));
+  ivec2 M = textureSize(uPyr, L) - 1;
+  ivec2 a = min(ivec2(lo / s), M), z = min(ivec2(hi / s), M);
+  for (int j = 0; j < 4; j++) for (int i = 0; i < 4; i++) {
+    ivec2 t = a + ivec2(i, j);
+    if (t.x > z.x || t.y > z.y) continue;
+    if (texelFetch(uPyr, t, L).r > 1e-5) return true;
+  }
+  return false;
+}
+void main(){
+  int x = int(gl_FragCoord.x);
+  if (int(gl_FragCoord.y) == 0) { outColor = vec4(x < uN && act(x) ? 1. : 0.); return; }
+  bool any = false;
+  for (int k = 0; k < 16; k++) { int e = x * 16 + k; if (e < uN && act(e)) { any = true; break; } }
+  outColor = vec4(any ? 1. : 0.);
 }`;
 
 export class MaskGPU {
@@ -108,7 +154,7 @@ export class MaskGPU {
       for (let i = 0; i < n; i++) { const name = gl.getActiveUniform(p, i).name.replace(/\[0\]$/, ''); u[name] = gl.getUniformLocation(p, name); }
       return { p, u };
     };
-    this.progs = { bake: mk(BAKE), brush: mk(BRUSH) };
+    this.progs = { bake: mk(BAKE), brush: mk(BRUSH), reduce: mk(REDUCE), active: mk(ACTIVE) };
     this.vao = gl.createVertexArray();
     gl.bindVertexArray(this.vao);
     const buf = gl.createBuffer();
@@ -140,9 +186,76 @@ export class MaskGPU {
       gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
       this.tex[i] = t; this.fbo[i] = f;
     }
+    // max pyramid: level k is the mask max-pooled 2^(k+1) times over
+    if (this.pyr) { gl.deleteTexture(this.pyr); this.pyrFbo.forEach(f => gl.deleteFramebuffer(f)); }
+    const pw = Math.max(1, w >> 1), ph = Math.max(1, h >> 1);
+    this.levels = Math.floor(Math.log2(Math.max(pw, ph))) + 1;
+    this.pyr = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, this.pyr);
+    gl.texStorage2D(gl.TEXTURE_2D, this.levels, gl.R32F, pw, ph);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST_MIPMAP_NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    this.pyrFbo = [];
+    for (let k = 0; k < this.levels; k++) {
+      const f = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.pyr, k);
+      this.pyrFbo.push(f);
+    }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     this.w = w; this.h = h; this.cur = 0;
+    this.activeKey = '';
     return true;
+  }
+
+  // the per-copy "has weight" flags (an N×1 texture), recomputed when the mask or the list changes
+  activeTexture(scene, n, elVersion) {
+    if (!this.w || !this.progs) return null;
+    const key = `${scene.maskVersion}|${elVersion}|${this.cur}`;
+    if (key === this.activeKey && this.activeN === n) return this.active;
+    const gl = this.gl, R = this.progs.reduce;
+    gl.bindVertexArray(this.vao);
+    gl.disable(gl.BLEND);
+    gl.useProgram(R.p);
+    gl.activeTexture(gl.TEXTURE0);
+    for (let k = 0; k < this.levels; k++) {
+      if (k === 0) gl.bindTexture(gl.TEXTURE_2D, this.tex[this.cur]);
+      else { gl.bindTexture(gl.TEXTURE_2D, this.pyr); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_BASE_LEVEL, k - 1); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAX_LEVEL, k - 1); }
+      gl.uniform1i(R.u.uSrc, 0);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.pyrFbo[k]);
+      gl.viewport(0, 0, Math.max(1, (this.w >> 1) >> k), Math.max(1, (this.h >> 1) >> k));
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    }
+    gl.bindTexture(gl.TEXTURE_2D, this.pyr);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_BASE_LEVEL, 0);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAX_LEVEL, this.levels - 1);
+    if (!this.active || this.activeN !== n) {
+      if (this.active) { gl.deleteTexture(this.active); gl.deleteFramebuffer(this.activeFbo); }
+      this.active = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, this.active);
+      gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, Math.max(1, n), 2);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      this.activeFbo = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.activeFbo);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.active, 0);
+      this.activeN = n;
+    }
+    const A = this.progs.active, g = scene.model.geo;
+    gl.useProgram(A.p);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.view.elTex); gl.uniform1i(A.u.uEl, 0);
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, this.pyr); gl.uniform1i(A.u.uPyr, 1);
+    gl.uniform2f(A.u.uMS, this.w, this.h);
+    gl.uniform1i(A.u.uMode, g.mode === 'hyp' ? 0 : g.mode === 'euc' ? 1 : 2);
+    gl.uniform1i(A.u.uLevels, this.levels);
+    gl.uniform1i(A.u.uN, n);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.activeFbo);
+    gl.viewport(0, 0, Math.max(1, n), 2);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.bindVertexArray(null);
+    this.activeKey = key;
+    return this.active;
   }
   texture() { return this.w ? this.tex[this.cur] : null; }
 

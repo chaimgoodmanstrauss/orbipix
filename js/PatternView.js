@@ -17,6 +17,7 @@ import { unreduce } from './OrbifoldModel.js';
 import { planeOfUV, worldOfPlane } from './Orbits.js';
 
 const MAXF = 64, WIDTH = 16;
+const INTERACTIVE_QUALITY = 0.5;   // resolution scale while dragging / brushing / zooming
 
 const VS = `#version 300 es
 in vec2 aPos; void main(){ gl_Position = vec4(aPos, 0., 1.); }`;
@@ -113,8 +114,85 @@ void applyEl(int e, vec2 p, vec3 P, out vec2 q, out vec3 Q, out float gd){
 }
 `;
 
-const FS = COMMON + `
-uniform sampler2D uMotif, uImg, uMask;
+
+// ── the method: the colour of an orbit, from the image and the mask ──
+const ORBIT = `
+uniform sampler2D uImg, uMask, uActive;
+uniform int uMaskMode, uNNear;
+uniform int uAvg;           // 0 weighted average, 1 highest weight wins, 2 no mask: average all, 3 no mask: first hit
+uniform float uTexPer;      // image texels per image-plane unit
+// the mask, bilinear by hand (float textures need not be filterable)
+float maskAt(vec2 uv){
+  ivec2 n = textureSize(uMask, 0);
+  vec2 s = uv * vec2(n) - .5; ivec2 i = ivec2(floor(s)); vec2 f = fract(s); ivec2 M = n - 1;
+  float a = texelFetch(uMask, clamp(i, ivec2(0), M), 0).r, b = texelFetch(uMask, clamp(i + ivec2(1, 0), ivec2(0), M), 0).r;
+  float c = texelFetch(uMask, clamp(i + ivec2(0, 1), ivec2(0), M), 0).r, d = texelFetch(uMask, clamp(i + ivec2(1, 1), ivec2(0), M), 0).r;
+  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+// the orbit of the folded point (p, P): its colour, alpha 0 when no copy lands on the image.
+// pxw: folded world units per output pixel (for the image's mip level)
+vec4 orbitColor(vec2 p, vec3 P, float pxw){
+    float sw = 0., cnt = 0., best = -1.;
+    vec3 swc = vec3(0.), sumc = vec3(0.), bestc = vec3(0.);
+    bool noMask = uAvg >= 2;
+    int nLoop = noMask || uMaskMode == 1 ? uNG : uNNear;
+    for (int e = 0; e < 4096; e++) {
+      if (e >= nLoop) break;
+      bool near = e < uNNear;                 // near copies also feed the no-weight fallback
+      if (uMaskMode == 1 && !near && !noMask) {
+        if (texelFetch(uActive, ivec2(e >> 4, 1), 0).r < 0.5) { e = e | 15; continue; }   // a block of 16 with no weight
+        if (texelFetch(uActive, ivec2(e, 0), 0).r < 0.5) continue;
+      }
+      vec4 t3 = E(3, e);
+      vec2 q; vec3 Q; float gd;
+      applyEl(e, p, P, q, Q, gd);
+      vec2 uv = uvOf(planeOf(q, Q));
+      if (!inImg(uv)) continue;
+      if (noMask) {
+        vec4 c = textureLod(uImg, uv, log2(max(gd * planeD(Q) * uTexPer * pxw, 1.)));
+        if (uAvg == 3) return vec4(c.rgb, 1.);     // the first copy in the crown that lands on the image
+        sumc += c.rgb; cnt += 1.;
+        continue;
+      }
+      float w = uMaskMode == 1 ? maskAt(uv) : (t3.y > 0.5 ? wdom(q, Q) : 0.);
+      if (w <= 0. && !near) continue;
+      float lod = log2(max(gd * planeD(Q) * uTexPer * pxw, 1.));
+      vec4 c = textureLod(uImg, uv, lod);
+      w *= c.a;
+      sw += w; swc += w * c.rgb; cnt += 1.; sumc += c.rgb;
+      if (w > best) { best = w; bestc = c.rgb; }
+    }
+    if (cnt == 0.) return vec4(0.);
+    if (noMask) return vec4(uAvg == 2 ? sumc / cnt : vec3(0.), uAvg == 2 ? 1. : 0.);
+    if (uAvg == 1) return vec4(best > 1e-4 ? bestc : sumc / cnt, 1.);
+    return vec4(sw > 1e-4 ? swc / sw : sumc / cnt, 1.);     // an orbit with no weight: plain average
+}
+
+// the domain texture's chart of F: the world itself in 2D, stereographic about the comma on the sphere
+uniform vec4 uChart;        // chart box x0, y0, x1, y1
+uniform vec3 uChC, uChE1, uChE2;
+uniform vec2 uDomSize;      // texels
+vec2 chartOf(vec2 p, vec3 P){ return uMode == 2 ? vec2(dot(P, uChE1), dot(P, uChE2)) / max(1. + dot(P, uChC), 1e-4) : p; }
+vec3 sphOfChart(vec2 x){ float r = dot(x, x); return ((1. - r) * uChC + 2. * x.x * uChE1 + 2. * x.y * uChE2) / (1. + r); }
+float chartD(vec3 P){ return uMode == 2 ? 1. / max(1. + dot(P, uChC), 1e-4) : 1.; }   // chart units per world unit
+`;
+
+// one texel of the domain texture: the orbit colour of its point
+const CACHE_FS = COMMON + ORBIT + `
+out vec4 outColor;
+void main(){
+  vec2 x = mix(uChart.xy, uChart.zw, gl_FragCoord.xy / uDomSize);
+  vec2 p = x; vec3 P = vec3(0.);
+  if (uMode == 2) P = sphOfChart(x);
+  else if (uMode == 0 && dot(p, p) >= 0.9999) { outColor = vec4(0.); return; }
+  float pxw = (uChart.z - uChart.x) / uDomSize.x / chartD(P);
+  if (!foldP(p, P)) { outColor = vec4(0.); return; }
+  vec4 c = orbitColor(p, P, pxw);
+  outColor = vec4(c.rgb * c.a, c.a);          // premultiplied, so mipmaps blend cleanly
+}`;
+
+const FS = COMMON + ORBIT + `
+uniform sampler2D uMotif, uDom;
 uniform int uNI, uNP;
 uniform vec2 uCenter;      // canvas centre, device px
 uniform float uS;          // device px per screen unit
@@ -128,19 +206,9 @@ uniform int uCommaHL;        // 0 none, 1 hovered, 2 selected
 uniform float uDpr;
 uniform float uDim;
 uniform int uHomeTint;
-uniform int uShow;          // 0 pattern, 1 source (the image as it lies in the world)
-uniform int uGuides, uShowComma, uHasImg, uMaskMode, uHeight;
-uniform float uTexPer;
+uniform int uShow;          // 0 the pattern; 1 adjusting the image: the image laid over the pattern where it lies
+uniform int uGuides, uShowComma, uHasImg;
 out vec4 outColor;
-// the mask, bilinear by hand (float textures need not be filterable)
-float maskAt(vec2 uv){
-  ivec2 n = textureSize(uMask, 0);
-  vec2 s = uv * vec2(n) - .5; ivec2 i = ivec2(floor(s)); vec2 f = fract(s); ivec2 M = n - 1;
-  float a = texelFetch(uMask, clamp(i, ivec2(0), M), 0).r, b = texelFetch(uMask, clamp(i + ivec2(1, 0), ivec2(0), M), 0).r;
-  float c = texelFetch(uMask, clamp(i + ivec2(0, 1), ivec2(0), M), 0).r, d = texelFetch(uMask, clamp(i + ivec2(1, 1), ivec2(0), M), 0).r;
-  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
-}
-
 
 void main(){
   vec2 px = gl_FragCoord.xy;
@@ -211,39 +279,26 @@ void main(){
   vec3 col = mix(paper, parity == 0 ? fillF : fillB, uHasImg == 1 ? 0.3 : 1.);
   if (uHomeTint == 1 && steps == 0 && uHasImg == 0) col = mix(col, vec3(1.), 0.35);
   float pxw = sph ? 1. / uS : k * J / uS;          // folded world units per device pixel
-  bool guides = uGuides == 1 || uShow == 1;
+  bool guides = uGuides == 1;
 
-  if (uHasImg == 1 && uShow == 0 && ok) {
-    // ── the method: weighted average of the image over the orbit of the folded point ──
-    float sw = 0., cnt = 0., best = -1.;
-    vec3 swc = vec3(0.), sumc = vec3(0.), bestc = vec3(0.);
-    for (int e = 0; e < 1024; e++) {
-      if (e >= uNG) break;
-      vec4 t3 = E(3, e);
-      vec2 q; vec3 Q; float gd;
-      applyEl(e, p, P, q, Q, gd);
-      vec2 uv = uvOf(planeOf(q, Q));
-      if (!inImg(uv)) continue;
-      float lod = log2(max(gd * planeD(Q) * uTexPer * pxw, 1.));
-      vec4 c = textureLod(uImg, uv, lod);
-      float w = uMaskMode == 1 ? maskAt(uv) : (t3.y > 0.5 ? wdom(q, Q) : 0.);
-      w *= c.a;
-      sw += w; swc += w * c.rgb; cnt += 1.; sumc += c.rgb;
-      if (w > best) { best = w; bestc = c.rgb; }
-    }
-    if (cnt > 0.) {
-      if (uHeight == 1) col = best > 1e-4 ? bestc : sumc / cnt;
-      else col = sw > 1e-4 ? swc / sw : sumc / cnt;     // an orbit with no weight: plain average
-    }
-  } else if (uHasImg == 1 && uShow == 1) {
-    // ── the source: the image where it lies, dimmed where its weight is low ──
+  if (uHasImg == 1 && ok) {
+    // the orbit colours, computed once per point of F (the domain texture), looked up at the folded point
+    vec2 uvD = (chartOf(p, P) - uChart.xy) / (uChart.zw - uChart.xy);
+    float tpw = uDomSize.x / (uChart.z - uChart.x) * chartD(P);
+    vec4 c = textureLod(uDom, uvD, log2(max(tpw * pxw, 1.)));
+    col = col * (1. - c.a) + c.rgb;
+  }
+  if (uHasImg == 1 && uShow == 1) {
+    // ── adjusting: the pattern a little desaturated, the image over it where it lies,
+    //    fully where its weight is high, at 30% where the mask is dark ──
+    col = mix(vec3(dot(col, vec3(0.299, 0.587, 0.114))), col, 0.65);
     vec2 uv = uvOf(planeOf(p0, P0));
     if (inImg(uv)) {
       float pxr = sph ? 1. / uS : J / uS;
       vec4 c = textureLod(uImg, uv, log2(max(planeD(P0) * uTexPer * pxr, 1.)));
-      float w = uMaskMode == 1 ? maskAt(uv) : wdom(p0, P0);
-      col = mix(mix(vec3(0.12), c.rgb, 0.32), c.rgb, clamp(w, 0., 1.));
-    } else col = mix(col, paper, 0.4);
+      float w = uAvg >= 2 ? 1. : uMaskMode == 1 ? maskAt(uv) : wdom(p0, P0);
+      col = mix(col, c.rgb, mix(0.3, 1., clamp(w, 0., 1.)) * c.a);
+    }
   }
 
   // ── comma ── (this tile's own, and those of tiles one or two steps away that poke in)
@@ -354,7 +409,7 @@ void main(){
 }`;
 
 // state that lives with the shared WebGL context, not with one view
-const SHARED = ['gl', 'prog', 'vao', 'uni', 'dataTex', 'motifTex', 'imgTex', 'elTex', '_imgVer', '_elVer', '_ng', '_counts', '_uploadedVersion', '_dataDirty'];
+const SHARED = ['gl', 'prog', 'vao', 'uni', 'cacheProg', 'cacheUni', 'domTex', 'domFbo', 'domKey', 'domW', 'domH', 'chart', 'chartKey', 'dataTex', 'motifTex', 'imgTex', 'elTex', '_imgVer', '_elVer', '_ng', '_nnear', '_counts', '_uploadedVersion', '_dataDirty'];
 function hexToRgb(h) {
   const n = parseInt(h.slice(1), 16);
   return [(n >> 16 & 255) / 255, (n >> 8 & 255) / 255, (n & 255) / 255];
@@ -371,16 +426,19 @@ export class PatternView {
     if (opts.shareView) { this.view = opts.shareView.view; this.partners.push(opts.shareView); opts.shareView.partners.push(this); this._listeners = opts.shareView._listeners; }
     else this.view = { mode: null, V: Mob.id(), R: M3.id(), zoom: 1, off: [0, 0] };
     this.cursor = null;       // brush ring { x, y, r } in CSS px
-    this.showOutline = this.kind === 'source';
     this.hover = null;        // set by FeatureTool for drawing tooltips/handles
     this.dim = 0;
     this._dirty = true;
     this._listeners = this._listeners || [];
     // one WebGL context for every view (so they can share the mask texture): it draws
     // into a hidden canvas, which is copied into this view's 2D canvas
-    this.G = opts.shareView ? opts.shareView.G : { canvas: document.createElement('canvas'), views: [] };
+    // the first view draws straight into its own canvas; a second view (shareView) would draw
+    // through the shared context and copy the result into its 2D canvas
+    this.G = opts.shareView ? opts.shareView.G : { canvas, views: [] };
     this.G.views.push(this);
-    this.ctx2d = canvas.getContext('2d');
+    this.direct = this.G.canvas === canvas;
+    this.ctx2d = this.direct ? null : canvas.getContext('2d');
+    this.quality = 1;         // < 1 while the user is interacting: fewer pixels, then a full-resolution redraw
     this._initGL();
     this._resize();
     new ResizeObserver(() => { this._resize(); this.requestRender(); }).observe(canvas.parentElement);
@@ -408,24 +466,30 @@ export class PatternView {
       if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
       return s;
     };
-    const prog = gl.createProgram();
-    gl.attachShader(prog, sh(gl.VERTEX_SHADER, VS));
-    gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FS));
-    gl.linkProgram(prog);
-    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+    const link = fsrc => {
+      const pr = gl.createProgram();
+      gl.attachShader(pr, sh(gl.VERTEX_SHADER, VS));
+      gl.attachShader(pr, sh(gl.FRAGMENT_SHADER, fsrc));
+      gl.bindAttribLocation(pr, 0, 'aPos');
+      gl.linkProgram(pr);
+      if (!gl.getProgramParameter(pr, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(pr));
+      return pr;
+    };
+    const prog = link(FS);
+    this.cacheProg = link(CACHE_FS);
     this.prog = prog;
     const buf = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, buf);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
-    const loc = gl.getAttribLocation(prog, 'aPos');
+    const loc = 0;
     this.vao = gl.createVertexArray();
     gl.bindVertexArray(this.vao);
     gl.enableVertexAttribArray(loc);
     gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-    this.uni = {};
-    for (const n of ['uData', 'uMotif', 'uMode', 'uNF', 'uNI', 'uNP', 'uCenter', 'uS', 'uOff', 'uV0', 'uV1', 'uR', 'uCommaC', 'uCommaE1', 'uCommaE2', 'uCommaSize', 'uCommaA', 'uCommaHL', 'uDpr', 'uDim', 'uHomeTint',
-      'uImg', 'uMask', 'uEl', 'uShow', 'uGuides', 'uShowComma', 'uHasImg', 'uNG', 'uMaskMode', 'uHeight', 'uFlip', 'uPlace', 'uK', 'uPole', 'uTexPer', 'uFeather'])
-      this.uni[n] = gl.getUniformLocation(prog, n);
+    const uniforms = pr => { const u = {}, n = gl.getProgramParameter(pr, gl.ACTIVE_UNIFORMS); for (let i = 0; i < n; i++) { const nm = gl.getActiveUniform(pr, i).name.replace(/\[0\]$/, ''); u[nm] = gl.getUniformLocation(pr, nm); } return u; };
+    this.uni = uniforms(prog);
+    this.cacheUni = uniforms(this.cacheProg);
+    this.domTex = null; this.domKey = '';
     this.dataTex = gl.createTexture();
     this.motifTex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, this.motifTex);
@@ -461,7 +525,7 @@ export class PatternView {
       list.forEach((E, r) => {
         const o = r * 16;
         if (E.R) { d.set([E.R[0], E.R[1], E.R[2], 0, E.R[3], E.R[4], E.R[5], 0, E.R[6], E.R[7], E.R[8], 0], o); d.set([0, E.near ? 1 : 0, 0, 0], o + 12); }
-        else { const [a, b, c, dd] = E.M; d.set([a[0], a[1], b[0], b[1], c[0], c[1], dd[0], dd[1]], o); d.set([E.conj ? 1 : 0, E.near ? 1 : 0, 0, 0], o + 12); }
+        else { const [a, b, c, dd] = E.M; d.set([a[0], a[1], b[0], b[1], c[0], c[1], dd[0], dd[1]], o); d.set(E.uvBox || [-10, -10, 10, 10], o + 8); d.set([E.conj ? 1 : 0, E.near ? 1 : 0, 0, 0], o + 12); }
       });
       gl.bindTexture(gl.TEXTURE_2D, this.elTex);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 4, n, 0, gl.RGBA, gl.FLOAT, d);
@@ -469,6 +533,7 @@ export class PatternView {
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
       this._elVer = sc.elVersion;
       this._ng = list.length;
+      this._nnear = els.nearCount || 0;
     }
   }
 
@@ -481,13 +546,18 @@ export class PatternView {
 
   _resize() {
     const r = this.canvas.parentElement.getBoundingClientRect();
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    this.dpr = dpr;
+    this.odpr = Math.min(window.devicePixelRatio || 1, 2);     // overlay: always sharp
+    this.dpr = this.odpr * this.quality;                       // the pattern: fewer pixels while interacting
     this.cssW = r.width; this.cssH = r.height;
-    for (const c of [this.canvas, this.overlay]) {
-      c.width = Math.max(1, Math.round(r.width * dpr));
-      c.height = Math.max(1, Math.round(r.height * dpr));
-    }
+    const set = (c, d) => { const w = Math.max(1, Math.round(r.width * d)), h = Math.max(1, Math.round(r.height * d)); if (c.width !== w) c.width = w; if (c.height !== h) c.height = h; };
+    set(this.canvas, this.dpr);
+    set(this.overlay, this.odpr);
+  }
+  // called on every pointer move / wheel that changes the picture: draw coarse now, sharp when it stops
+  interacting() {
+    if (this.quality === 1) { this.quality = INTERACTIVE_QUALITY; this._resize(); }
+    clearTimeout(this._sharpen);
+    this._sharpen = setTimeout(() => { this.quality = 1; this._resize(); this.requestRender(); }, 180);
   }
 
   // ── view state ─────────────────────────────────────────────────────────
@@ -662,12 +732,117 @@ export class PatternView {
     this._dataDirty = false;
   }
 
+  // uniforms shared by the pattern and the domain-texture programs (U: that program's locations)
+  _orbitUniforms(U, sc, st, has, mode) {
+    const gl = this.gl, set = (n, f, ...v) => { if (U[n]) gl['uniform' + f](U[n], ...v); };
+    set('uData', '1i', 0); set('uImg', '1i', 2); set('uMask', '1i', 3); set('uEl', '1i', 4); set('uActive', '1i', 5);
+    set('uMode', '1i', mode); set('uNF', '1i', this._counts ? this._counts[0] : 0);
+    set('uNG', '1i', has ? this._ng || 0 : 0); set('uNNear', '1i', has ? this._nnear || 0 : 0);
+    set('uMaskMode', '1i', has && sc.maskMode === 'custom' ? 1 : 0);
+    set('uAvg', '1i', ({ mean: 0, height: 1, all: 2, first: 3 })[st.avg] || 0);
+    if (!has) return;
+    const pl = sc.place, L = Math.max(sc.img.w, sc.img.h), ch = this.chart;
+    set('uFlip', '1i', pl.flip ? 1 : 0); set('uPlace', '4f', pl.c[0], pl.c[1], pl.a[0], pl.a[1]);
+    set('uK', '2f', L / sc.img.w, L / sc.img.h); set('uPole', '1f', pl.pole || 1);
+    set('uTexPer', '1f', L / (2 * Math.hypot(pl.a[0], pl.a[1]))); set('uFeather', '1f', sc.featherRadius());
+    if (ch) {
+      set('uChart', '4f', ...ch.box); set('uChC', '3f', ...ch.c); set('uChE1', '3f', ...ch.e1); set('uChE2', '3f', ...ch.e2);
+      set('uDomSize', '2f', this.domW || 1, this.domH || 1);
+    }
+  }
+
+  // The chart of F the domain texture is laid out in: a box round F in world coordinates (2D),
+  // or round F in the stereographic chart about the comma (sphere).
+  _chartFor(g) {
+    if (g.mode !== 'sph') {
+      const pts = [g.comma.c];
+      for (const f of g.faces) {
+        if (!f.ends || !f.ends[0] || !f.ends[1]) continue;
+        for (let i = 0; i <= 16; i++) pts.push(g.mode === 'hyp' ? hypLerp(f.ends[0], f.ends[1], i / 16) : [f.ends[0][0] + (f.ends[1][0] - f.ends[0][0]) * i / 16, f.ends[0][1] + (f.ends[1][1] - f.ends[0][1]) * i / 16]);
+      }
+      let x0 = Math.min(...pts.map(p => p[0])), x1 = Math.max(...pts.map(p => p[0])), y0 = Math.min(...pts.map(p => p[1])), y1 = Math.max(...pts.map(p => p[1]));
+      const pad = 0.03 * Math.max(x1 - x0, y1 - y0, 1e-3);
+      x0 -= pad; x1 += pad; y0 -= pad; y1 += pad;
+      if (g.mode === 'hyp') { x0 = Math.max(x0, -1); y0 = Math.max(y0, -1); x1 = Math.min(x1, 1); y1 = Math.min(y1, 1); }
+      return { box: [x0, y0, x1, y1], c: [0, 0, 1], e1: [1, 0, 0], e2: [0, 1, 0] };
+    }
+    const c = g.comma.c, a = Math.abs(c[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+    const e1 = norm3(cross3(a, c)), e2 = cross3(c, e1);
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    const N = 4000;
+    for (let i = 0; i < N; i++) {
+      const z = 1 - 2 * (i + 0.5) / N, r = Math.sqrt(1 - z * z), t = i * 2.399963229728653;
+      const P = [r * Math.cos(t), r * Math.sin(t), z];
+      if (g.faces.length && g.reduce(P).word.length) continue;          // outside F
+      const d = Math.max(1 + dot3(P, c), 1e-4), x = dot3(P, e1) / d, y = dot3(P, e2) / d;
+      x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y);
+    }
+    const pad = 0.05 * Math.max(x1 - x0, y1 - y0, 1e-3), cap = 4;
+    return { box: [Math.max(x0 - pad, -cap), Math.max(y0 - pad, -cap), Math.min(x1 + pad, cap), Math.min(y1 + pad, cap)], c, e1, e2 };
+  }
+
+  // texels per chart unit the domain texture needs: as many as the screen shows of the most
+  // magnified copy of F (measured at full resolution, so interaction doesn't change it)
+  _domainDensity(g) {
+    const S = Math.min(this.cssW, this.cssH) / 2 * 0.96 * this.odpr * this.view.zoom;
+    if (g.mode === 'sph') return 2 * S;
+    let m = Mob.deriv(this.view.V, g.comma.c);
+    if (g.mode === 'hyp') {
+      const w0 = this.screenToWorld([0, 0]);
+      if (w0) { const r = g.reduce(w0); if (r.ok) m = Math.max(m, Mob.deriv(this.view.V, w0) / r.k); }
+    }
+    return S * m;
+  }
+
+  // (re)compute the domain texture when anything it depends on changed
+  _updateDomain(sc, st, mode) {
+    const gl = this.gl, g = this.model.geo;
+    const ck = `${g.version}|${g.comma.c}`;
+    if (this.chartKey !== ck) { this.chart = this._chartFor(g); this.chartKey = ck; }
+    const b = this.chart.box, bw = b[2] - b[0], bh = b[3] - b[1];
+    let dens = this._domainDensity(g);
+    dens = Math.pow(2, Math.ceil(Math.log2(Math.max(dens, 1e-6)) * 2) / 2);      // buckets of √2, so small view changes reuse it
+    const MAXT = Math.min(gl.getParameter(gl.MAX_TEXTURE_SIZE), 2048);
+    let W = Math.ceil(bw * dens), H = Math.ceil(bh * dens);
+    const f = Math.min(1, MAXT / Math.max(W, H));
+    W = Math.max(8, Math.round(W * f)); H = Math.max(8, Math.round(H * f));
+    const key = [W, H, ck, sc.img.version, sc.maskMode, sc.maskVersion, sc.gpu?.cur, this._elVer, st.avg, sc.featherRadius().toFixed(5), JSON.stringify(sc.place)].join('|');
+    if (key === this.domKey && this.domTex) return;
+    gl.activeTexture(gl.TEXTURE6);       // unit 6 is the domain texture's own: never bind it where the pass samples
+    if (!this.domTex || this.domW !== W || this.domH !== H) {
+      if (this.domTex) { gl.deleteTexture(this.domTex); gl.deleteFramebuffer(this.domFbo); }
+      this.domTex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, this.domTex);
+      gl.texStorage2D(gl.TEXTURE_2D, Math.floor(Math.log2(Math.max(W, H))) + 1, gl.RGBA8, W, H);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      this.domFbo = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.domFbo);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.domTex, 0);
+      this.domW = W; this.domH = H;
+    }
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    gl.useProgram(this.cacheProg); gl.bindVertexArray(this.vao);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.domFbo);
+    gl.viewport(0, 0, W, H);
+    this._orbitUniforms(this.cacheUni, sc, st, true, mode);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.activeTexture(gl.TEXTURE6);
+    gl.bindTexture(gl.TEXTURE_2D, this.domTex);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    this.domKey = key;
+    this.G.domainPasses = (this.G.domainPasses || 0) + 1;
+  }
+
   render() {
     const gl = this.gl, g = this.model.geo;
     if (!gl || !this.prog || gl.isContextLost()) return;
     if (this.canvas.width < 2 || !this.canvas.offsetParent) return;
     const Gc = this.G.canvas;
-    if (Gc.width !== this.canvas.width || Gc.height !== this.canvas.height) { Gc.width = this.canvas.width; Gc.height = this.canvas.height; }
+    if (!this.direct && (Gc.width !== this.canvas.width || Gc.height !== this.canvas.height)) { Gc.width = this.canvas.width; Gc.height = this.canvas.height; }
     if (g && this.view.mode !== g.mode) this.resetView();
     if (g && (this._dataDirty || this._uploadedVersion !== g.version)) this._upload();
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
@@ -708,35 +883,30 @@ export class PatternView {
     const sc = this.scene, st = sc ? sc.settings : {};
     const has = !!(sc && sc.img && sc.place && g && !this.model.isBad());
     if (has) this._uploadScene();
-    gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, this.imgTex); gl.uniform1i(U.uImg, 2);
-    gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, sc?.gpu?.texture() || null); gl.uniform1i(U.uMask, 3);
-    gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, this.elTex); gl.uniform1i(U.uEl, 4);
-    gl.uniform1i(U.uHasImg, has && this._imgVer >= 0 ? 1 : 0);
-    gl.uniform1i(U.uShow, this.kind === 'source' ? 1 : 0);
+    const act = has && sc.maskMode === 'custom' && sc.gpu && !['all', 'first'].includes(st.avg) ? sc.gpu.activeTexture(sc, this._ng || 0, this._elVer) : null;
+    // textures on fixed units for both programs
+    const bind = (unit, t) => { gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, t); };
+    bind(0, this.dataTex); bind(1, this.motifTex); bind(2, this.imgTex); bind(3, sc?.gpu?.texture() || null); bind(4, this.elTex); bind(5, act);
+    if (has) this._updateDomain(sc, st, mode);
+    bind(6, has ? this.domTex : null);
+    gl.useProgram(this.prog); gl.bindVertexArray(this.vao);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    this._orbitUniforms(U, sc, st, has, mode);
+    gl.uniform1i(U.uDom, 6);
+    gl.uniform1i(U.uHasImg, has && this._imgVer >= 0 && this.domTex ? 1 : 0);
+    gl.uniform1i(U.uShow, this.adjusting ? 1 : 0);
     gl.uniform1i(U.uGuides, st.guides ? 1 : 0);
     gl.uniform1i(U.uShowComma, st.showComma || !has ? 1 : 0);
-    gl.uniform1i(U.uNG, has ? this._ng || 0 : 0);
-    gl.uniform1i(U.uMaskMode, has && sc.maskMode === 'custom' ? 1 : 0);
-    gl.uniform1i(U.uHeight, st.avg === 'height' ? 1 : 0);
-    if (has) {
-      const pl = sc.place, L = Math.max(sc.img.w, sc.img.h);
-      gl.uniform1i(U.uFlip, pl.flip ? 1 : 0);
-      gl.uniform4f(U.uPlace, pl.c[0], pl.c[1], pl.a[0], pl.a[1]);
-      gl.uniform2f(U.uK, L / sc.img.w, L / sc.img.h);
-      gl.uniform1f(U.uPole, pl.pole || 1);
-      gl.uniform1f(U.uTexPer, L / (2 * Math.hypot(pl.a[0], pl.a[1])));
-      gl.uniform1f(U.uFeather, sc.featherRadius());
-    }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-    this.ctx2d.clearRect(0, 0, this.canvas.width, this.canvas.height);
-    this.ctx2d.drawImage(Gc, 0, 0);
+    if (!this.direct) { this.ctx2d.clearRect(0, 0, this.canvas.width, this.canvas.height); this.ctx2d.drawImage(Gc, 0, 0); }
     this.drawOverlay();
   }
 
   // ── 2D overlay: glue arrows on the home tile, lattice handles ───────────
   drawOverlay() {
-    const ctx = this.octx, g = this.model.geo, d = this.dpr;
+    const ctx = this.octx, g = this.model.geo, d = this.odpr;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, this.overlay.width, this.overlay.height);
     if (!g || this.dim > 0.3) return;
@@ -767,13 +937,12 @@ export class PatternView {
       });
     }
 
-    // the image's outline (source view, or while placing it)
+    // adjusting the image: a gray line round its edge
     const sc = this.scene;
-    if (sc && sc.img && sc.place && (this.showOutline || this.outlineOn)) {
-      const pole = sc.place.pole || 1;
+    if (this.adjusting && sc && sc.img && sc.place) {
+      const pole = sc.place.pole || 1, N = 64;
       ctx.beginPath();
       let pen = false;
-      const N = 48;
       for (let e = 0; e < 4; e++) for (let i = 0; i <= N; i++) {
         const t = i / N;
         const uv = [[t, 0], [1, t], [1 - t, 1], [0, 1 - t]][e];
@@ -783,9 +952,7 @@ export class PatternView {
         if (pen) ctx.lineTo(c[0], c[1]); else ctx.moveTo(c[0], c[1]);
         pen = true;
       }
-      ctx.setLineDash([6, 4]); ctx.lineWidth = 1.5; ctx.strokeStyle = '#1a1a1f'; ctx.stroke();
-      ctx.setLineDash([6, 4]); ctx.lineDashOffset = 6; ctx.strokeStyle = '#fbfaf6'; ctx.stroke();
-      ctx.setLineDash([]); ctx.lineDashOffset = 0;
+      ctx.lineWidth = 1.5; ctx.strokeStyle = '#8a8a86'; ctx.stroke();
     }
     if (this.cursor) {
       ctx.beginPath(); ctx.arc(this.cursor.x, this.cursor.y, this.cursor.r, 0, 2 * Math.PI);

@@ -28,36 +28,25 @@
 <div class="layout">
   <section class="pane pane-pattern" aria-label="pattern">
     <div class="toolbar" role="toolbar" aria-label="tools">
-      <div class="seg" id="tools">
-        <button data-tool="navigate" aria-pressed="true" title="hover and drag the pattern's features; drag empty space to move (N)">✋ Navigate</button>
-        <button data-tool="move" aria-pressed="false" title="drag to move the image, shift-drag to turn it, wheel to scale (M)">✥ Place image</button>
+      <div class="seg" id="modes">
+        <button data-mode="pattern" aria-pressed="true" title="the pattern: hover and drag its features, drag empty space to move (P)">Pattern</button>
+        <button data-mode="adjust" aria-pressed="false" title="the image in its place over the pattern: move it, brush its mask (A)">Adjust image</button>
+      </div>
+      <div class="seg" id="tools" hidden>
+        <button data-tool="move" aria-pressed="true" title="drag to move the image, shift-drag to turn it, wheel to scale (M)">✥ Move</button>
         <button data-tool="brush" aria-pressed="false" title="bring the image under the brush forward (B)">✚ Brush</button>
         <button data-tool="erase" aria-pressed="false" title="push the image under the brush back (E)">− Erase</button>
       </div>
-      <div class="seg" id="views">
-        <button data-view="pattern" aria-pressed="false">Pattern</button>
-        <button data-view="split" aria-pressed="true">Split</button>
-        <button data-view="source" aria-pressed="false">Source</button>
-      </div>
     </div>
-    <div class="canvases" id="canvases" data-view="split">
-      <div class="canvas-wrap wrap-source">
-        <canvas id="source" aria-label="the source image as it lies under the pattern; the dimmed parts carry little weight" tabindex="0"></canvas>
-        <canvas id="overlay-source" class="overlay" aria-hidden="true"></canvas>
-        <div id="tip-source" class="tip" hidden></div>
-        <span class="wrap-label">source</span>
-      </div>
-      <div class="canvas-wrap wrap-pattern">
-        <canvas id="pattern" aria-label="the symmetric pattern made from the image" tabindex="0"></canvas>
-        <canvas id="overlay" class="overlay" aria-hidden="true"></canvas>
-        <div id="tip" class="tip" hidden></div>
-        <span class="wrap-label">pattern</span>
-        <div class="pane-tools">
-          <button id="undo" class="mini" aria-label="undo" title="undo (Ctrl/Cmd-Z)">↶</button>
-          <button id="redo" class="mini" aria-label="redo" title="redo (Shift-Ctrl/Cmd-Z)">↷</button>
-          <button id="home" class="mini" aria-label="reset the view" title="reset the view (0)">⌂</button>
-          <button id="save" class="mini" aria-label="save the pattern as PNG" title="save the pattern as PNG">⤓</button>
-        </div>
+    <div class="canvas-wrap">
+      <canvas id="pattern" aria-label="the symmetric pattern made from the image" tabindex="0"></canvas>
+      <canvas id="overlay" class="overlay" aria-hidden="true"></canvas>
+      <div id="tip" class="tip" hidden></div>
+      <div class="pane-tools">
+        <button id="undo" class="mini" aria-label="undo" title="undo (Ctrl/Cmd-Z)">↶</button>
+        <button id="redo" class="mini" aria-label="redo" title="redo (Shift-Ctrl/Cmd-Z)">↷</button>
+        <button id="home" class="mini" aria-label="reset the view" title="reset the view (0)">⌂</button>
+        <button id="save" class="mini" aria-label="save the pattern as PNG" title="save the pattern as PNG">⤓</button>
       </div>
     </div>
     <p class="hint" id="hint"></p>
@@ -91,6 +80,8 @@
       <div class="row radios" role="radiogroup" aria-label="how an orbit's colours combine">
         <label><input type="radio" name="avg" value="mean" checked> Weighted average</label>
         <label><input type="radio" name="avg" value="height"> Highest weight wins</label>
+        <label><input type="radio" name="avg" value="all"> No mask: average all</label>
+        <label><input type="radio" name="avg" value="first"> No mask: first hit</label>
       </div>
       <div class="row radios">
         <label><input type="checkbox" id="guides" checked> Show tile edges</label>
@@ -115,7 +106,7 @@
       <summary>How it works</summary>
       <p>A symmetry splits the plane into <b>orbits</b>: sets of points that must share one colour. Orbipix colours each orbit of the pattern with a <b>weighted average</b> of the image over the same orbit, with weights from a <b>mask</b>.</p>
       <p>The starting mask is the fundamental domain: weight 1 inside, 0 outside, so you get the usual tiling. <b>Feather</b> softens its edges, so neighbouring copies blend instead of meeting at a seam.</p>
-      <p>The mask is <b>contravariant</b>: the weights over each orbit add up to one. <b>Brush</b> raises the weight under it and lowers the rest of each orbit to match, pulling that part of the image into the pattern, wherever it is, in as many pieces as you like. <b>Erase</b> does the opposite. Brush on either view.</p>
+      <p>The mask is <b>contravariant</b>: the weights over each orbit add up to one. <b>Adjust image</b> lays the image over the pattern where it lies, faint where its weight is low. There, <b>Brush</b> raises the weight under it and lowers the rest of each orbit to match, pulling that part of the image into the pattern, wherever it is, in as many pieces as you like. <b>Erase</b> does the opposite.</p>
       <p>With <b>Highest weight wins</b>, the mask reads as a height: the pattern becomes a collage of overlapping copies.</p>
     </details>
     <details class="fold">

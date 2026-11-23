@@ -18,9 +18,9 @@ const model = new OrbifoldModel();
 const highlight = new Highlight();
 const scene = new Scene(model);
 const view = new PatternView($('#pattern'), $('#overlay'), model, highlight, { scene, kind: 'pattern' });
-const sview = new PatternView($('#source'), $('#overlay-source'), model, highlight, { scene, kind: 'source', shareView: view });
 scene.gpu = new MaskGPU(view);
-let currentTool = 'navigate';
+let currentTool = 'navigate';     // 'navigate' in Pattern mode; 'move' | 'brush' | 'erase' while adjusting the image
+let adjustTool = 'move';
 
 // ── history (signature + parameters) ────────────────────────────────────
 const undo = [], redo = [];
@@ -114,11 +114,7 @@ const toolOpts = {
   onBrushSize: f => setBrush(scene.settings.brush * f),
 };
 const tool = new FeatureTool({ ...toolOpts, view, canvas: $('#pattern'), tip: $('#tip') });
-const stool = new FeatureTool({ ...toolOpts, view: sview, canvas: $('#source'), tip: $('#tip-source') });
-// the comma is selected in both views at once
-const select0 = tool.select.bind(tool), sselect0 = stool.select.bind(stool);
-tool.select = on => { select0(on); sselect0(on); };
-stool.select = on => { select0(on); sselect0(on); };
+
 
 // ── reacting to model changes ───────────────────────────────────────────
 model.on('change', ev => {
@@ -146,9 +142,9 @@ function renderHint() {
   const g = model.geo;
   if (model.isBad()) { $('#hint').textContent = 'No pattern has this signature — the last good one is shown faded.'; return; }
   if (!g) return;
-  if (currentTool === 'move') { $('#hint').textContent = 'Drag to move the image, shift-drag to turn it, wheel to scale it. Its outline is dashed.'; return; }
+  if (currentTool === 'move') { $('#hint').textContent = 'Adjusting the image: drag to move it, shift-drag to turn it, wheel to scale it · alt-drag pans · P returns to the pattern.'; return; }
   if (currentTool === 'brush' || currentTool === 'erase') {
-    $('#hint').textContent = (currentTool === 'brush' ? 'Brush: pulls the image under it into the pattern' : 'Erase: pushes the image under it out of the pattern') + ' (on either view) · shift-wheel resizes the brush · alt-drag pans.';
+    $('#hint').textContent = (currentTool === 'brush' ? 'Brush: pulls the image under it into the pattern' : 'Erase: pushes the image under it out of the pattern') + ' · shift-wheel resizes the brush · alt-drag pans · P returns to the pattern.';
     return;
   }
   const m = g.mode === 'hyp' ? 'Poincaré disk: drag empty space to slide the plane, hover edges to reshape'
@@ -211,7 +207,10 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && tool.selected) { tool.select(false); return; }
   const typing = inEditor || e.target.closest?.('input');
   if (!typing && !mod && !e.altKey) {
-    const k = { n: 'navigate', m: 'move', b: 'brush', e: 'erase' }[e.key.toLowerCase()];
+    const key = e.key.toLowerCase();
+    if (key === 'p') { setMode('pattern'); return; }
+    if (key === 'a') { setMode(view.adjusting ? 'pattern' : 'adjust'); return; }
+    const k = { m: 'move', b: 'brush', e: 'erase' }[key];
     if (k) { setTool(k); return; }
     if (e.key === '[') { setBrush(scene.settings.brush / 1.2); return; }
     if (e.key === ']') { setBrush(scene.settings.brush * 1.2); return; }
@@ -221,23 +220,27 @@ document.addEventListener('keydown', e => {
 $('#home').onclick = () => { view.resetView(); view.requestRender(); };
 
 // ── image panel ─────────────────────────────────────────────────────────
+// two modes on the one canvas: the pattern, or adjusting the image (it is shown in place over the pattern)
+function setMode(m) {
+  const adj = m === 'adjust';
+  document.querySelectorAll('#modes [data-mode]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.mode === m)));
+  $('#tools').hidden = !adj;
+  view.adjusting = adj;
+  setTool(adj ? adjustTool : 'navigate');
+}
 function setTool(t) {
+  if (t !== 'navigate' && !view.adjusting) { setMode('adjust'); if (t !== adjustTool) setTool(t); return; }
+  if (t !== 'navigate') adjustTool = t;
   currentTool = t;
   document.querySelectorAll('#tools [data-tool]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.tool === t)));
-  view.outlineOn = t === 'move';
-  for (const c of [$('#pattern'), $('#source')]) c.style.cursor = t === 'move' ? 'move' : t === 'navigate' ? 'grab' : 'none';
-  if (t === 'navigate') { view.cursor = sview.cursor = null; }
-  view.drawOverlay(); sview.drawOverlay();
+  $('#pattern').style.cursor = t === 'move' ? 'move' : t === 'navigate' ? 'grab' : 'none';
+  if (t !== 'brush' && t !== 'erase') view.cursor = null;
+  tool._setHover?.(null);
+  view.requestRender();
   renderHint();
 }
+$('#modes').addEventListener('click', e => { const b = e.target.closest('[data-mode]'); if (b) setMode(b.dataset.mode); });
 $('#tools').addEventListener('click', e => { const b = e.target.closest('[data-tool]'); if (b) setTool(b.dataset.tool); });
-
-function setView(v) {
-  $('#canvases').dataset.view = v;
-  document.querySelectorAll('#views [data-view]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.view === v)));
-  view.requestRender();
-}
-$('#views').addEventListener('click', e => { const b = e.target.closest('[data-view]'); if (b) setView(b.dataset.view); });
 
 const S = scene.settings;
 function bindSlider(id, key, fmt, after) {
@@ -249,7 +252,7 @@ function setBrush(px) { S.brush = Math.min(240, Math.max(4, px)); $('#brush').va
 bindSlider('feather', 'feather', v => v.toFixed(2), () => { if (scene.maskMode === 'domain') view.requestRender(); });
 bindSlider('brush', 'brush', v => Math.round(v) + ' px');
 bindSlider('strength', 'strength', v => Math.round(v * 100) + '%');
-document.querySelectorAll('input[name=avg]').forEach(r => r.addEventListener('change', () => { S.avg = r.value; view.requestRender(); }));
+document.querySelectorAll('input[name=avg]').forEach(r => r.addEventListener('change', () => { S.avg = r.value; renderMaskState(); view.requestRender(); }));
 $('#guides').addEventListener('change', e => { S.guides = e.target.checked; view.requestRender(); });
 $('#comma').addEventListener('change', e => { S.showComma = e.target.checked; view.requestRender(); });
 $('#mask-reset').onclick = () => { scene.resetMask(); commit(); };
@@ -258,9 +261,11 @@ $('#fit').onclick = () => { scene.fit(); commit(); };
 $('#flip').onclick = () => { scene.flip(); commit(); };
 
 function renderMaskState() {
-  $('#mask-state').textContent = scene.maskMode === 'domain'
-    ? 'The fundamental domain, feathered. Brush to start shaping it.'
-    : 'Your mask: brushed or loaded. Feather applies only to the domain mask.';
+  $('#mask-state').textContent = ['all', 'first'].includes(S.avg)
+    ? 'Not used now: ' + (S.avg === 'all' ? 'every copy of the image in an orbit counts equally.' : 'each orbit takes the first copy of the image it meets.')
+    : scene.maskMode === 'domain'
+      ? 'The fundamental domain, feathered. Brush to start shaping it.'
+      : 'Your mask: brushed or loaded. Feather applies only to the domain mask.';
 }
 function renderStats() {
   const e = scene.elements();
@@ -297,7 +302,7 @@ async function loadFile(file, asMask = false) {
 $('#file').addEventListener('change', e => { loadFile(e.target.files[0]); e.target.value = ''; });
 $('#mask-file').addEventListener('change', e => { loadFile(e.target.files[0], true); e.target.value = ''; });
 $('#camera').onclick = async () => {
-  if (stream) { stopCamera(); scene.setImage(makeDefaultPicture()); $('#camera').textContent = 'Camera'; return; }
+  if (stream) { stopCamera(); scene.setImage(makeDefaultPicture()); scene.img.isDefault = true; $('#camera').textContent = 'Camera'; return; }
   try {
     stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } });
     const v = document.createElement('video');
@@ -339,11 +344,18 @@ const fromHash = readHash();
 const start = fromHash && Sig.parse(fromHash.sig) ? fromHash : (() => { const p = PRESETS.find(p => p.signature === DEFAULT); return { sig: p.signature, params: p.params || {} }; })();
 applySignature(start.sig, { params: start.params, motif: start.motif, resetView: true, history: false });
 editor.set(model.getSignature());
-scene.setImage(makeDefaultPicture());
-if (fromHash?.place) scene.setPlace({ ...fromHash.place, mode: model.geo.mode });
-renderMaskState();
-renderStats();
-commit();
+// the default image: the duck (falls back to a drawn landscape if it cannot be loaded)
+(async () => {
+  let pic;
+  try { pic = await createImageBitmap(await (await fetch('images/duck.png')).blob()); } catch { pic = makeDefaultPicture(); }
+  if (!scene.img) {
+    scene.setImage(pic); scene.img.isDefault = true;
+    if (fromHash?.place) scene.setPlace({ ...fromHash.place, mode: model.geo.mode });
+  }
+  renderMaskState();
+  renderStats();
+  commit();
+})();
 updateUndoButtons();
 view.requestRender();
 
@@ -356,5 +368,51 @@ window.addEventListener('hashchange', () => {
 });
 
 // console access for checks
-window.orbipix = { model, view, sview, scene, highlight, editor, tool, stool, presets: PRESETS, setTool, setView };
+// ── sharing a state with a Claude Code session: Opt-Cmd-C (Ctrl-Alt-C elsewhere) copies a
+//    short text to paste into the chat; orbipix.applyState(obj) puts it back (the image and a
+//    brushed mask are not included — too big for a paste)
+function collectState() {
+  const v = view.view;
+  return {
+    app: 'orbipix', saved: new Date().toISOString(), url: location.href,
+    signature: model.getSignature(), params: model.bad ? {} : model.params.snapshot(), motif: model.motif || null,
+    geometry: model.geo?.mode, place: scene.place, settings: { ...scene.settings },
+    mode: view.adjusting ? 'adjust' : 'pattern', tool: currentTool,
+    view: { mode: v.mode, V: v.V, R: v.R, zoom: v.zoom, off: v.off },
+    image: scene.img ? { w: scene.img.w, h: scene.img.h, video: !!scene.img.video, default: scene.img.isDefault || false } : null,
+    mask: scene.maskMode, copies: scene.elements().list.length,
+    canvas: { w: view.cssW, h: view.cssH }, ua: navigator.userAgent,
+  };
+}
+async function copyState() {
+  const st = collectState();
+  const text = `Orbipix state (${st.saved}):\n${JSON.stringify(st)}`;
+  try { await navigator.clipboard.writeText(text); $('#hint').textContent = 'State copied — paste it into the Claude session.'; }
+  catch { prompt('Copy this state:', text); }
+}
+function applyState(st) {
+  applySignature(st.signature, { params: st.params, motif: st.motif, history: false });
+  editor.set(model.getSignature());
+  if (st.place) scene.setPlace({ ...st.place, mode: model.geo.mode });
+  Object.assign(scene.settings, st.settings || {});
+  syncSettingsUI();
+  if (st.view && st.view.mode === model.geo.mode) Object.assign(view.view, st.view);
+  setMode(st.mode === 'adjust' ? 'adjust' : 'pattern');
+  if (st.mode === 'adjust' && st.tool) setTool(st.tool);
+  commit();
+  view.requestRender();
+}
+function syncSettingsUI() {
+  for (const [id, key, fmt] of [['feather', 'feather', v => v.toFixed(2)], ['brush', 'brush', v => Math.round(v) + ' px'], ['strength', 'strength', v => Math.round(v * 100) + '%']]) {
+    $('#' + id).value = S[key]; $('#' + id + '-v').textContent = fmt(S[key]);
+  }
+  document.querySelectorAll('input[name=avg]').forEach(r => { r.checked = r.value === S.avg; });
+  renderMaskState();
+  $('#guides').checked = S.guides; $('#comma').checked = S.showComma;
+}
+document.addEventListener('keydown', e => {
+  if (e.code === 'KeyC' && e.altKey && (e.metaKey || e.ctrlKey)) { e.preventDefault(); copyState(); }
+});
+
+window.orbipix = { model, view, scene, highlight, editor, tool, presets: PRESETS, setTool, setMode, collectState, applyState };
 window.model = model;

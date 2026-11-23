@@ -37,11 +37,14 @@ export class Scene {
   // ── image ──────────────────────────────────────────────────────────────
   setImage(src, { video = false } = {}) {
     let el = src, w = src.videoWidth || src.naturalWidth || src.width, h = src.videoHeight || src.naturalHeight || src.height;
-    if (!video && Math.max(w, h) > MAX_IMG) {
-      const s = MAX_IMG / Math.max(w, h);
+    if (!video) {
+      // a still image is redrawn onto white: transparent parts count as white (and big ones are scaled down)
+      const s = Math.min(1, MAX_IMG / Math.max(w, h));
       const c = document.createElement('canvas');
-      c.width = Math.round(w * s); c.height = Math.round(h * s);
-      c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
+      c.width = Math.max(1, Math.round(w * s)); c.height = Math.max(1, Math.round(h * s));
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+      ctx.drawImage(src, 0, 0, c.width, c.height);
       el = c; w = c.width; h = c.height;
     }
     const prevAspect = this.img ? this.img.w / this.img.h : null;
@@ -93,10 +96,11 @@ export class Scene {
   elements() {
     const g = this.model.geo;
     if (!g || !this.img || !this.place || this.model.isBad()) return { list: [], nearCount: 0 };
-    const key = `${g.version}|${g.mode}|${JSON.stringify(this.place)}|${this.img.w}x${this.img.h}|${g.comma.c}`;
+    const fr = this.featherRadius();
+    const key = `${g.version}|${g.mode}|${JSON.stringify(this.place)}|${this.img.w}x${this.img.h}|${g.comma.c}|${fr.toFixed(4)}`;
     if (key !== this._elsKey) {
       if (this.place.mode !== g.mode) { this.fit(); return this.elements(); }
-      this._els = enumerate(g, this.place, this.img);
+      this._els = enumerate(g, this.place, this.img, { feather: fr });
       this._elsKey = key;
       this.elVersion++;
     }

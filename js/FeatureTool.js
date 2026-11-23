@@ -232,6 +232,7 @@ export class FeatureTool {
     const tool = this.getTool ? this.getTool() : 'navigate';
     this._ring(tool, x, y);
     if (!d) { this._setHover(tool === 'navigate' ? this.hitTest(x, y) : null, x, y); this._ring(tool, x, y); return; }
+    if (d.kind !== 'click') this.view.interacting();
     if (d.kind === 'place') {
       const z = this._plane(x, y);
       if (z && d.last) {
@@ -368,6 +369,7 @@ export class FeatureTool {
     this.pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]) };
   }
   _pinchMove() {
+    this.view.interacting();
     const [a, b] = [...this.pointers.values()];
     const d = Math.hypot(a[0] - b[0], a[1] - b[1]);
     if (this.pinch.d > 0) this.view.zoomAt(d / this.pinch.d, (a[0] + b[0]) / 2, (a[1] + b[1]) / 2);
@@ -376,6 +378,7 @@ export class FeatureTool {
 
   _wheel(e) {
     e.preventDefault();
+    this.view.interacting();
     const [x, y] = this._xy(e);
     const tool = this.getTool ? this.getTool() : 'navigate';
     if (tool === 'move' && this.scene?.img) {
