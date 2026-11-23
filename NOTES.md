@@ -125,7 +125,14 @@ lands on the image.
 - Orbiscope's Surface tab and the comma (now off by default; it can be turned back on) are dropped.
   Orbiscope's feature hovering and dragging are kept under the Navigate tool.
 - Default image: `images/duck.png`, the rubber duck from Kaleidesign (`orbifold webgl/Kaleidesign Nov 10 2019 stable/library/images/duck.png`). If it fails to load, the procedural landscape (`textures.makeDefaultPicture`) is used instead.
-- Still images are redrawn onto white when loaded, so transparent pixels count as white.
+- **Transparency and white backgrounds** (`Scene.clearWhiteBackground`). Transparent pixels keep
+  their alpha, and their colour becomes white. If at least 60% of the image's edge is near-white
+  (all channels ≥ 232, or transparent), the near-white region connected to the edge is made
+  transparent, with a half-alpha rim one pixel wide. White inside the picture (eyes, highlights, a
+  hole) stays opaque. Alpha multiplies the weight in every option. "Average all" and the no-weight
+  fallback average only opaque parts (all transparent gives white), and "first hit" skips transparent
+  hits. Still images go to the GPU as raw bytes, because a canvas would lose the colour of transparent
+  pixels.
 
 ## Open
 

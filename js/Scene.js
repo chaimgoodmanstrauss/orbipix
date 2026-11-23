@@ -37,18 +37,22 @@ export class Scene {
   // ── image ──────────────────────────────────────────────────────────────
   setImage(src, { video = false } = {}) {
     let el = src, w = src.videoWidth || src.naturalWidth || src.width, h = src.videoHeight || src.naturalHeight || src.height;
+    let pixels = null, whiteBackground = false;
     if (!video) {
-      // a still image is redrawn onto white: transparent parts count as white (and big ones are scaled down)
-      const s = Math.min(1, MAX_IMG / Math.max(w, h));
+      // still images: scaled down if big; transparency kept (as weight), transparent colour = white;
+      // a white background (white all along the edge, flood-filled inwards) counts as transparent
+      const k = Math.min(1, MAX_IMG / Math.max(w, h));
       const c = document.createElement('canvas');
-      c.width = Math.max(1, Math.round(w * s)); c.height = Math.max(1, Math.round(h * s));
-      const ctx = c.getContext('2d');
-      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
-      ctx.drawImage(src, 0, 0, c.width, c.height);
-      el = c; w = c.width; h = c.height;
+      c.width = Math.max(1, Math.round(w * k)); c.height = Math.max(1, Math.round(h * k));
+      c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
+      w = c.width; h = c.height;
+      const data = c.getContext('2d').getImageData(0, 0, w, h).data;
+      whiteBackground = clearWhiteBackground(data, w, h);
+      pixels = data;
+      el = c;
     }
     const prevAspect = this.img ? this.img.w / this.img.h : null;
-    this.img = { el, w, h, video, version: (this.img?.version || 0) + 1 };
+    this.img = { el, pixels, w, h, video, whiteBackground, version: (this.img?.version || 0) + 1 };
     if (this.maskMode === 'custom') {
       const [mw, mh] = this.maskDims();
       if (prevAspect !== w / h || mw !== this.gpu?.w || mh !== this.gpu?.h) this.resetMask(true);
@@ -151,4 +155,36 @@ export class Scene {
     this.gpu.brush(this, list.map(d => ({ x: d.uv[0] * this.gpu.w, y: d.uv[1] * this.gpu.h, r: d.R, s: d.s })), sign);
     this._bump();
   }
+}
+
+// In place on RGBA bytes: transparent pixels take the colour white (keeping their alpha); and if the
+// image's edge is mostly near-white, the near-white region connected to the edge becomes transparent,
+// with a one-pixel soft rim. Returns whether a white background was found.
+const NEAR_WHITE = 232;
+export function clearWhiteBackground(d, w, h) {
+  const n = w * h;
+  for (let i = 0; i < n; i++) {
+    const a = d[4 * i + 3] / 255;
+    if (a < 1) for (let c = 0; c < 3; c++) d[4 * i + c] = Math.round(d[4 * i + c] * a + 255 * (1 - a));
+  }
+  const white = i => d[4 * i + 3] < 8 || (d[4 * i] >= NEAR_WHITE && d[4 * i + 1] >= NEAR_WHITE && d[4 * i + 2] >= NEAR_WHITE);
+  let edge = 0, wEdge = 0;
+  const edgePx = [];
+  for (let x = 0; x < w; x++) edgePx.push(x, (h - 1) * w + x);
+  for (let y = 1; y < h - 1; y++) edgePx.push(y * w, y * w + w - 1);
+  for (const i of edgePx) { edge++; if (white(i)) wEdge++; }
+  if (wEdge < 0.6 * edge) return false;
+  const bg = new Uint8Array(n), stack = [];
+  for (const i of edgePx) if (white(i) && !bg[i]) { bg[i] = 1; stack.push(i); }
+  while (stack.length) {
+    const i = stack.pop(), x = i % w, y = (i - x) / w;
+    for (const j of [x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, y > 0 ? i - w : -1, y < h - 1 ? i + w : -1])
+      if (j >= 0 && !bg[j] && white(j)) { bg[j] = 1; stack.push(j); }
+  }
+  for (let i = 0; i < n; i++) {
+    if (bg[i]) { d[4 * i] = d[4 * i + 1] = d[4 * i + 2] = 255; d[4 * i + 3] = 0; continue; }
+    const x = i % w, y = (i - x) / w;
+    if ((x > 0 && bg[i - 1]) || (x < w - 1 && bg[i + 1]) || (y > 0 && bg[i - w]) || (y < h - 1 && bg[i + w])) d[4 * i + 3] = Math.min(d[4 * i + 3], 128);
+  }
+  return true;
 }

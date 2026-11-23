@@ -132,7 +132,7 @@ float maskAt(vec2 uv){
 // the orbit of the folded point (p, P): its colour, alpha 0 when no copy lands on the image.
 // pxw: folded world units per output pixel (for the image's mip level)
 vec4 orbitColor(vec2 p, vec3 P, float pxw){
-    float sw = 0., cnt = 0., best = -1.;
+    float sw = 0., cnt = 0., best = -1., suma = 0.;
     vec3 swc = vec3(0.), sumc = vec3(0.), bestc = vec3(0.);
     bool noMask = uAvg >= 2;
     int nLoop = noMask || uMaskMode == 1 ? uNG : uNNear;
@@ -150,22 +150,24 @@ vec4 orbitColor(vec2 p, vec3 P, float pxw){
       if (!inImg(uv)) continue;
       if (noMask) {
         vec4 c = textureLod(uImg, uv, log2(max(gd * planeD(Q) * uTexPer * pxw, 1.)));
-        if (uAvg == 3) return vec4(c.rgb, 1.);     // the first copy in the crown that lands on the image
-        sumc += c.rgb; cnt += 1.;
+        if (uAvg == 3 && c.a > 0.5) return vec4(c.rgb, 1.);     // the first copy in the crown that lands on the (opaque) image
+        sumc += c.a * c.rgb; suma += c.a; cnt += 1.;
         continue;
       }
       float w = uMaskMode == 1 ? maskAt(uv) : (t3.y > 0.5 ? wdom(q, Q) : 0.);
       if (w <= 0. && !near) continue;
       float lod = log2(max(gd * planeD(Q) * uTexPer * pxw, 1.));
       vec4 c = textureLod(uImg, uv, lod);
-      w *= c.a;
-      sw += w; swc += w * c.rgb; cnt += 1.; sumc += c.rgb;
+      w *= c.a;                                  // transparent parts (and a white background) carry no weight
+      sw += w; swc += w * c.rgb; cnt += 1.; sumc += c.a * c.rgb; suma += c.a;
       if (w > best) { best = w; bestc = c.rgb; }
     }
     if (cnt == 0.) return vec4(0.);
-    if (noMask) return vec4(uAvg == 2 ? sumc / cnt : vec3(0.), uAvg == 2 ? 1. : 0.);
-    if (uAvg == 1) return vec4(best > 1e-4 ? bestc : sumc / cnt, 1.);
-    return vec4(sw > 1e-4 ? swc / sw : sumc / cnt, 1.);     // an orbit with no weight: plain average
+    // an orbit with no weight: the plain average of its opaque parts; all transparent: white
+    vec3 plain = suma > 1e-4 ? sumc / suma : vec3(1.);
+    if (noMask) return vec4(plain, 1.);
+    if (uAvg == 1) return vec4(best > 1e-4 ? bestc : plain, 1.);
+    return vec4(sw > 1e-4 ? swc / sw : plain, 1.);
 }
 
 // the domain texture's chart of F: the world itself in 2D, stereographic about the comma on the sphere
@@ -512,7 +514,11 @@ export class PatternView {
       gl.bindTexture(gl.TEXTURE_2D, this.imgTex);
       gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
       gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-      try { gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, sc.img.el); } catch (e) { return; }
+      try {
+        // still images go up as raw bytes (a canvas would lose the colour of transparent pixels)
+        if (sc.img.pixels) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, sc.img.w, sc.img.h, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(sc.img.pixels.buffer));
+        else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, sc.img.el);
+      } catch (e) { return; }
       gl.generateMipmap(gl.TEXTURE_2D);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
