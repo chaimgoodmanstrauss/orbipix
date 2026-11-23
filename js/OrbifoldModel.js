@@ -252,6 +252,9 @@ export class OrbifoldModel {
     const verts = polygonVertices2(faces);
     faces.forEach((f, i) => { f.ends = segmentEnds(verts.filter(v => v.walls.includes(i)).map(v => v.p), f.wall); });
     classifyFacesByImage(faces, '2d');
+    // 2222, the one flat pattern with a twist: its two folded edges carry the lattice height
+    // ("length") and the half-turn offset lattice_c, which shears the lattice ("twist")
+    if (this._eucName === '2222') faces.forEach(f => { if (f.kind === 'fold') f.params = ['lattice_b', 'lattice_c']; });
     colorFaces(faces);
     return { mode: 'euc', faces, inner: [], verts };
   }

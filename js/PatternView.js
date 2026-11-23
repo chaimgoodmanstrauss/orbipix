@@ -14,10 +14,12 @@
 import { Mob, C, M3, toSphere, fromSphere, norm3, cross3, dot3, hypLerp, apply2, apply3 } from './geom.js';
 import { makeCommaCanvas } from './textures.js';
 import { unreduce } from './OrbifoldModel.js';
-import { planeOfUV, worldOfPlane } from './Orbits.js';
+
+import { planeOfUV, worldOfPlane, translationLattice } from './Orbits.js';
 
 const MAXF = 64, WIDTH = 16;
-const INTERACTIVE_QUALITY = 0.5;   // resolution scale while dragging / brushing / zooming
+const EUC_CELLS_ACROSS = 2.5;      // lattice repeats across the canvas when a flat pattern opens
+const INTERACTIVE_QUALITY = 1;     // resolution scale while dragging / brushing / zooming (1: off — the domain texture made it unnecessary)
 
 const VS = `#version 300 es
 in vec2 aPos; void main(){ gl_Position = vec4(aPos, 0., 1.); }`;
@@ -569,6 +571,7 @@ export class PatternView {
   }
   // called on every pointer move / wheel that changes the picture: draw coarse now, sharp when it stops
   interacting() {
+    if (INTERACTIVE_QUALITY >= 1) return;
     if (this.quality === 1) { this.quality = INTERACTIVE_QUALITY; this._resize(); }
     clearTimeout(this._sharpen);
     this._sharpen = setTimeout(() => { this.quality = 1; this._resize(); this.requestRender(); }, 180);
@@ -582,8 +585,12 @@ export class PatternView {
     if (!g) return;
     if (g.mode === 'euc') {
       const c = g.comma ? g.comma.c : [0, 0];
-      // world z -> 0.32 (z - c)
-      this.view.V = [[0.32, 0], C.scale(c, -0.32), [0, 0], [1, 0]];
+      // world z -> s (z - c), with s chosen so the canvas (its shorter side) spans about 2.5
+      // lattice cells (cell size = √area of the translation lattice)
+      const lat = translationLattice(g);
+      const across = 2 / 0.96;                               // screen units across the shorter side at zoom 1
+      const s = lat ? across / (EUC_CELLS_ACROSS * Math.sqrt(lat.area)) : 0.32;
+      this.view.V = [[s, 0], C.scale(c, -s), [0, 0], [1, 0]];
     } else if (g.mode === 'sph') {
       const c = g.comma ? g.comma.c : [0, 0, 1];
       // world -> view: bring c to face the viewer, then tilt a little

@@ -125,6 +125,35 @@ hyperbolic), then alt-click back to `273`; the point stays within 0.32 px of the
   until it goes further, so a small wobble no longer turns the sphere or kills the click (the
   "conflict" seen on `3*2`). A refused alt-click (too near a point or edge) says so in the tooltip.
 
+## Twist on 2222: a shear (2026-11-23)
+
+`2222` is the one non-hyperbolic signature with a twist. Its domain is the rectangle x ∈ [0, 1],
+y ∈ [−b/2, b/2]. The left and right edges are folded by half-turns about (0, −c) and (1, c), and the
+top and bottom are glued by the vertical translation b. So the lattice is spanned by (0, b) and
+(2, 4c), and `lattice_c` shears it: that is the twist. The two folded edges now carry
+`['lattice_b', 'lattice_c']` as length and twist, like a hyperbolic cone-pair edge
+(`FeatureTool._startShear` / `_applyShear`):
+- **Shift-drag a folded edge:** its half-turn centres slide along it with the pointer (c changes by the
+  world distance dragged along the edge, clamped to ±b/2), shearing the pattern. The domain stays
+  put in the world, so the cones on the grabbed copy follow the pointer.
+- **Plain drag:** the lattice height b, ×e^(0.004·(dx − dy)), 0.3–3.
+- **Wheel:** b ×e^(±0.03); shift-wheel: c ± 0.01·b.
+- The round handles still work. Shape-tab labels: "folded edge · length", "folded edge · twist (shear)".
+- Checked: a 30 px shift-drag moved c by 0.26, which is the world length of 30 px; a 40 px plain drag
+  took b from 0.70 to 0.82; the columns visibly shear.
+
+Half resolution while interacting is now **off** (`INTERACTIVE_QUALITY = 1`): it blurred while
+moving, and the domain texture already makes redraws cheap.
+
+## Opening scale of flat patterns (2026-11-23)
+
+`PatternView.resetView` scales a Euclidean pattern so the canvas's shorter side spans
+`EUC_CELLS_ACROSS = 2.5` lattice cells. A cell's size is √area of the translation lattice, from
+`Orbits.translationLattice`: a walk over the group taking the shortest translation and the shortest
+one not parallel to it. Checked on all 17 wallpaper groups: one cell is 300 px on a 750 px canvas.
+The fundamental domain is 150–411 px, depending on how many copies make up a cell. The old fixed
+scale was 0.32.
+
 ## Decisions
 
 - Undo covers the signature, parameters, comma, image placement and mask (each history entry keeps a

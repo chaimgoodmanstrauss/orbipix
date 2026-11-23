@@ -13,7 +13,7 @@ export const PRESETS = [
   { group: 'plane', signature: '333', caption: 'Three kinds of third-turn, no mirrors.' },
   { group: 'plane', signature: '3*3', caption: 'Third-turns off the mirrors, and mirrors crossing three at a time.' },
   { group: 'plane', signature: '*2222', params: { lattice_b: 0.7 }, caption: 'A rectangle of mirrors. Drag the round handle to change its shape.' },
-  { group: 'plane', signature: '2222', params: { lattice_b: 0.8, lattice_c: 0.15 }, caption: 'Four kinds of half-turn. Two handles: one for the lattice, one slides a pair of centres.' },
+  { group: 'plane', signature: '2222', params: { lattice_b: 0.8, lattice_c: 0.15 }, caption: 'Four kinds of half-turn. Drag a folded edge to stretch the lattice; shift-drag it to shear the lattice (the twist).' },
   { group: 'plane', signature: '2*22', params: { lattice_b: 0.8 }, caption: 'Mirrors in two directions, plus a half-turn off them.' },
   { group: 'plane', signature: '22*', params: { lattice_b: 0.8 }, caption: 'Parallel mirrors, with half-turns between them.' },
   { group: 'plane', signature: '22x', params: { lattice_b: 0.8 }, caption: 'Half-turns and glides; no mirrors.' },

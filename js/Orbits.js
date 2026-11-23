@@ -249,3 +249,31 @@ export function orbitOnImage(geo, els, place, img, x) {
 }
 
 export { inUV };
+
+// Euclidean groups: the translation lattice, from a walk over the group (shortest translation t1,
+// shortest one not parallel to it t2) — its cell has area |t1 × t2|
+export function translationLattice(geo, maxNodes = 3000) {
+  if (geo.mode !== 'euc' || !geo.faces.length) return null;
+  const gens = faceGenerators(geo), c0 = geo.comma.c;
+  const key = q => q.map(v => Math.round(v * 1e6)).join(',');
+  const seen = new Set([key(c0)]), queue = [identity('euc')], ts = [];
+  while (queue.length && seen.size < maxNodes) {
+    const E = queue.shift();
+    for (const G of gens) {
+      const N = compose('euc', E, G), q = apply2E(N, c0), k = key(q);
+      if (seen.has(k)) continue;
+      seen.add(k); queue.push(N);
+      const [a, b, cc, d] = N.M;
+      if (!N.conj && C.abs(cc) < 1e-9) {
+        const r = C.div(a, d);
+        if (Math.abs(r[0] - 1) < 1e-9 && Math.abs(r[1]) < 1e-9) ts.push(C.div(b, d));
+      }
+    }
+  }
+  ts.sort((u, v) => C.abs(u) - C.abs(v));
+  const t1 = ts[0];
+  if (!t1) return null;
+  const t2 = ts.find(t => Math.abs(t1[0] * t[1] - t1[1] * t[0]) > 1e-9 * C.abs(t1) * C.abs(t));
+  if (!t2) return null;
+  return { t1, t2, area: Math.abs(t1[0] * t2[1] - t1[1] * t2[0]) };
+}

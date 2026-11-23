@@ -192,7 +192,7 @@ function renderParams() {
   }
   const label = n => {
     const [key, idx, s] = n.split('_');
-    if (key === 'lattice') return { b: 'lattice shape', c: 'gyration offset', x: 'lattice arrow, across', y: 'lattice arrow, up' }[idx];
+    if (key === 'lattice') return { b: model.geo?.mode === 'euc' && model.values.lattice_c !== undefined && model.params.names().includes('lattice_c') ? 'folded edge · length' : 'lattice shape', c: 'folded edge · twist (shear)', x: 'lattice arrow, across', y: 'lattice arrow, up' }[idx];
     const nice = { cornerPair: 'mirror edge', conePair: 'folded edge', fold: 'fold', handle: 'handle', cap: 'crosscap', tube: 'cut (tube)', slice: 'cut (slice)', band: 'band' }[key] || key;
     return `${nice} ${idx} · ${s === 'l' ? 'length' : 'twist'}`;
   };

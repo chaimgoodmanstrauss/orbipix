@@ -15,6 +15,7 @@ import { motifHit, applyWord, carry } from './Motif.js';
 import { M3 } from './geom.js';
 import { planeOfWorld, planeOfUV, uvOfPlane, inUV } from './Orbits.js';
 
+const isLen = n => n.endsWith('_l') || n === 'lattice_b', isTwist = n => n.endsWith('_t') || n === 'lattice_c';
 const HIT_EDGE = 7, HIT_POINT = 10, HIT_HANDLE = 12, ALT_SLOP = 6, ADD_CLEAR = 24;
 const LENGTH_DRAG_SPEED = 0.005, TWIST_DRAG_SPEED = 0.002;
 const LENGTH_WHEEL_STEP = 0.03, TWIST_WHEEL_STEP = 0.01;
@@ -121,7 +122,7 @@ export class FeatureTool {
     const g = this.model.geo, v = this.model.values;
     const num = n => (Math.round(v[n] * 100) / 100).toFixed(2);
     const lt = params => {
-      const L = params.find(n => n.endsWith('_l')), T = params.find(n => n.endsWith('_t'));
+      const L = params.find(isLen), T = params.find(isTwist);
       const parts = [];
       if (L) parts.push(`length ${num(L)}`);
       if (T) parts.push(`twist ${num(T)}`);
@@ -179,6 +180,8 @@ export class FeatureTool {
       this.drag = { kind: 'handle', handle: h, start: { pos: [...h.pos], value: this.model.values.lattice_b } };
     } else if (hit && (hit.type === 'face' || hit.type === 'inner') && hit.params?.length && this.model.geo.mode === 'hyp') {
       this.drag = this._startParamDrag(hit, x, y, e);
+    } else if (hit && hit.type === 'face' && hit.params?.includes('lattice_c')) {
+      this.drag = this._startShear(hit, x, y);
     } else if (hit && hit.type === 'point') {
       this.drag = { kind: 'click', hit, x, y, alt: e.altKey || e.metaKey };
     } else {
@@ -266,6 +269,9 @@ export class FeatureTool {
       if (!e.shiftKey && tn) vals[tn] = d.start[tn];
       this._applyParam(d, vals);
       this._tip(d.hit, x, y);
+    } else if (d.kind === 'shear') {
+      this._applyShear(d, x, y, e.shiftKey);
+      this._tip(d.hit, x, y);
     } else if (d.kind === 'motif') {
       if (Math.hypot(x - d.x, y - d.y) > 2) d.moved = true;
       this._moveMotif(d, x, y);
@@ -306,7 +312,7 @@ export class FeatureTool {
         this._setHover(this.hitTest(x, y), x, y);
       }
       else if (tk !== undefined) this._changeOrder(tk, d.alt ? -1 : 1, d.hit, d.x, d.y);
-    } else if (d.kind === 'param' || d.kind === 'handle') {
+    } else if (d.kind === 'param' || d.kind === 'handle' || d.kind === 'shear') {
       this.model.refresh();
       this.onCommit();
     }
@@ -437,6 +443,33 @@ export class FeatureTool {
     if (this.batch) this.batch(run); else run();
   }
 
+  // ── 2222: drag a folded edge. Shift-drag slides the half-turn centres along it (lattice_c):
+  //    a shear of the lattice, the flat pattern's twist. A plain drag changes the lattice
+  //    height (lattice_b). The fundamental domain stays put in the world, so the cones on
+  //    the grabbed copy of the edge follow the pointer.
+  _startShear(hit, x, y) {
+    const g = this.model.geo, f = g.faces[hit.index], word = hit.probe.word;
+    const A = unreduce(g, word, f.ends[0]), B = unreduce(g, word, f.ends[1]);
+    const l = Math.hypot(B[0] - A[0], B[1] - A[1]) || 1;
+    return { kind: 'shear', hit, x, y, w0: this.view.screenToWorld(this.view.cssToScreen(x, y)),
+      dir: [(B[0] - A[0]) / l, (B[1] - A[1]) / l], start: { b: this.model.values.lattice_b, c: this.model.values.lattice_c } };
+  }
+  _clampTwist(c, b) { const lim = b / 2; return Math.max(-lim, Math.min(lim, c)); }
+  _applyShear(d, x, y, shift) {
+    const w = this.view.screenToWorld(this.view.cssToScreen(x, y));
+    if (!w || !d.w0) return;
+    if (shift) {
+      const along = (w[0] - d.w0[0]) * d.dir[0] + (w[1] - d.w0[1]) * d.dir[1];
+      // right edge: centre (1, c) runs up the edge; left edge: centre (0, −c) runs down its edge,
+      // which is the left edge's own direction, so both are + along
+      this.model.setParams({ lattice_b: d.start.b, lattice_c: this._clampTwist(d.start.c + along, d.start.b) }, { quick: true });
+    } else {
+      const b = Math.min(3, Math.max(0.3, d.start.b * Math.exp(((x - d.x) - (y - d.y)) * 0.004)));
+      this.model.setParams({ lattice_b: b, lattice_c: this._clampTwist(d.start.c, b) }, { quick: true });
+    }
+    this.view.requestRender();
+  }
+
   // a short message by the pointer
   _say(text, x, y) {
     const t = this.tip;
@@ -485,6 +518,15 @@ export class FeatureTool {
       if (e.shiftKey && tn) vals[tn] = d.start[tn] + dir * TWIST_WHEEL_STEP;
       else if (ln) vals[ln] = d.start[ln] + dir * LENGTH_WHEEL_STEP;
       this._applyParam(d, vals);
+      this._tip(hit, x, y);
+      clearTimeout(this._wheelCommit);
+      this._wheelCommit = setTimeout(() => { this.model.refresh(); this.onCommit(); }, 350);
+      return;
+    }
+    if (hit && hit.type === 'face' && hit.params?.includes('lattice_c')) {
+      const v = this.model.values;
+      if (e.shiftKey) this.model.setParams({ lattice_c: this._clampTwist(v.lattice_c + dir * 0.01 * v.lattice_b, v.lattice_b) }, { quick: true });
+      else this.model.setParams({ lattice_b: v.lattice_b * Math.exp(dir * 0.03), lattice_c: this._clampTwist(v.lattice_c, v.lattice_b * Math.exp(dir * 0.03)) }, { quick: true });
       this._tip(hit, x, y);
       clearTimeout(this._wheelCommit);
       this._wheelCommit = setTimeout(() => { this.model.refresh(); this.onCommit(); }, 350);
