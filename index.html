@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Orbipix</title>
+<meta name="description" content="Turn any bitmap into a symmetric pattern: each orbit's colour is a weighted average over the image, with a brushable contravariant mask.">
+<link rel="stylesheet" href="css/orbipix.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='2' y='2' width='28' height='28' rx='6' fill='%23e0785a' stroke='%231a1a1f' stroke-width='2'/%3E%3Ccircle cx='21' cy='11' r='5' fill='%23ffd257'/%3E%3Cpath d='M2 24 Q10 14 18 22 T30 20 V30 H2Z' fill='%233f7d5c'/%3E%3C/svg%3E">
+<script type="importmap">
+{ "imports": { "./vendor/symmhub/lib/invlib/modules.js": "./js/shims/invlib-modules.js" } }
+</script>
+</head>
+<body>
+<header class="top">
+  <h1>Orbipix</h1>
+  <nav class="tabs" role="tablist" aria-label="panels">
+    <button role="tab" data-tab="image" aria-selected="true">Image</button>
+    <button role="tab" data-tab="shape" aria-selected="false">Shape</button>
+    <button role="tab" data-tab="examples" aria-selected="false">Examples</button>
+  </nav>
+  <div class="credits">
+    <a class="badge badge-mt" href="https://themagictheorem.com" target="_blank" rel="noopener">The Magic Theorem</a>
+    <a class="badge" href="../orbiscope/" title="Orbipix is built on Orbiscope's orbifold engine">Built on <b>Orbiscope</b></a>
+  </div>
+</header>
+
+<div class="layout">
+  <section class="pane pane-pattern" aria-label="pattern">
+    <div class="toolbar" role="toolbar" aria-label="tools">
+      <div class="seg" id="tools">
+        <button data-tool="navigate" aria-pressed="true" title="hover and drag the pattern's features; drag empty space to move (N)">✋ Navigate</button>
+        <button data-tool="move" aria-pressed="false" title="drag to move the image, shift-drag to turn it, wheel to scale (M)">✥ Place image</button>
+        <button data-tool="brush" aria-pressed="false" title="bring the image under the brush forward (B)">✚ Brush</button>
+        <button data-tool="erase" aria-pressed="false" title="push the image under the brush back (E)">− Erase</button>
+      </div>
+      <div class="seg" id="views">
+        <button data-view="pattern" aria-pressed="false">Pattern</button>
+        <button data-view="split" aria-pressed="true">Split</button>
+        <button data-view="source" aria-pressed="false">Source</button>
+      </div>
+    </div>
+    <div class="canvases" id="canvases" data-view="split">
+      <div class="canvas-wrap wrap-source">
+        <canvas id="source" aria-label="the source image as it lies under the pattern; the dimmed parts carry little weight" tabindex="0"></canvas>
+        <canvas id="overlay-source" class="overlay" aria-hidden="true"></canvas>
+        <div id="tip-source" class="tip" hidden></div>
+        <span class="wrap-label">source</span>
+      </div>
+      <div class="canvas-wrap wrap-pattern">
+        <canvas id="pattern" aria-label="the symmetric pattern made from the image" tabindex="0"></canvas>
+        <canvas id="overlay" class="overlay" aria-hidden="true"></canvas>
+        <div id="tip" class="tip" hidden></div>
+        <span class="wrap-label">pattern</span>
+        <div class="pane-tools">
+          <button id="undo" class="mini" aria-label="undo" title="undo (Ctrl/Cmd-Z)">↶</button>
+          <button id="redo" class="mini" aria-label="redo" title="redo (Shift-Ctrl/Cmd-Z)">↷</button>
+          <button id="home" class="mini" aria-label="reset the view" title="reset the view (0)">⌂</button>
+          <button id="save" class="mini" aria-label="save the pattern as PNG" title="save the pattern as PNG">⤓</button>
+        </div>
+      </div>
+    </div>
+    <p class="hint" id="hint"></p>
+  </section>
+
+  <aside class="side">
+    <div id="sig-editor" class="sig-editor"></div>
+    <p class="caption" id="caption"></p>
+
+    <div class="panel" data-tab-only="image">
+      <div class="row">
+        <label class="btn">Open image or video…<input type="file" id="file" accept="image/*,video/*" hidden></label>
+        <button class="btn" id="camera">Camera</button>
+      </div>
+      <p class="small">Or drop / paste an image anywhere.</p>
+      <div class="row">
+        <button class="btn" id="fit">Fit image</button>
+        <button class="btn" id="flip">Flip image</button>
+      </div>
+
+      <h3>Mask</h3>
+      <p class="small" id="mask-state"></p>
+      <label class="slider">Feather <input type="range" id="feather" min="0" max="1.5" step="0.01"><output id="feather-v"></output></label>
+      <label class="slider">Brush size <input type="range" id="brush" min="4" max="240" step="1"><output id="brush-v"></output></label>
+      <label class="slider">Brush strength <input type="range" id="strength" min="0.02" max="1" step="0.01"><output id="strength-v"></output></label>
+      <div class="row">
+        <button class="btn" id="mask-reset" title="back to the feathered fundamental domain">Domain mask</button>
+        <button class="btn" id="mask-flat" title="every point of each orbit weighs the same">Uniform</button>
+        <label class="btn" title="a grayscale image read as weights (a height map)">Load mask…<input type="file" id="mask-file" accept="image/*" hidden></label>
+      </div>
+      <div class="row radios" role="radiogroup" aria-label="how an orbit's colours combine">
+        <label><input type="radio" name="avg" value="mean" checked> Weighted average</label>
+        <label><input type="radio" name="avg" value="height"> Highest weight wins</label>
+      </div>
+      <div class="row radios">
+        <label><input type="checkbox" id="guides" checked> Show tile edges</label>
+        <label><input type="checkbox" id="comma"> Show comma</label>
+      </div>
+      <p class="small" id="stats"></p>
+    </div>
+
+    <div class="panel" data-tab-only="shape" hidden>
+      <div class="legend">
+        <span class="lg"><i class="sw mirror"></i> mirror</span>
+        <span class="lg"><i class="sw glued"></i> same colour: glued</span>
+      </div>
+      <div id="params" class="params"></div>
+    </div>
+
+    <div class="panel" data-tab-only="examples" hidden>
+      <div id="examples" class="examples"></div>
+    </div>
+
+    <details class="fold" open>
+      <summary>How it works</summary>
+      <p>A symmetry splits the plane into <b>orbits</b>: sets of points that must share one colour. Orbipix colours each orbit of the pattern with a <b>weighted average</b> of the image over the same orbit, with weights from a <b>mask</b>.</p>
+      <p>The starting mask is the fundamental domain: weight 1 inside, 0 outside, so you get the usual tiling. <b>Feather</b> softens its edges, so neighbouring copies blend instead of meeting at a seam.</p>
+      <p>The mask is <b>contravariant</b>: the weights over each orbit add up to one. <b>Brush</b> raises the weight under it and lowers the rest of each orbit to match, pulling that part of the image into the pattern, wherever it is, in as many pieces as you like. <b>Erase</b> does the opposite. Brush on either view.</p>
+      <p>With <b>Highest weight wins</b>, the mask reads as a height: the pattern becomes a collage of overlapping copies.</p>
+    </details>
+    <details class="fold">
+      <summary>The signature</summary>
+      <dl class="chars">
+        <dt>o</dt><dd>a <b>handle</b>: the pattern repeats by sliding.</dd>
+        <dt>3</dt><dd>a <b>gyration point</b> before any ∗: a turn with no mirror through it.</dd>
+        <dt>∗</dt><dd>a <b>kaleidoscope</b>: a family of mirror lines.</dd>
+        <dt>∗2</dt><dd>a digit after ∗ is a <b>corner</b>, where that many mirrors cross.</dd>
+        <dt>x</dt><dd>a <b>crosscap</b>, or miracle: a glide no mirror explains.</dd>
+      </dl>
+      <p>Under $2 the pattern lives on a sphere, at exactly $2 in the plane, over $2 in the hyperbolic plane. Hover the pattern in Navigate mode to find each feature; drag edges or handles to reshape.</p>
+    </details>
+  </aside>
+</div>
+
+<div id="drop" class="drop" hidden>Drop an image</div>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
