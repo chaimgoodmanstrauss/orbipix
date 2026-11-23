@@ -369,8 +369,26 @@ window.addEventListener('hashchange', () => {
 
 // console access for checks
 // ── sharing a state with a Claude Code session: Opt-Cmd-C (Ctrl-Alt-C elsewhere) copies a
-//    short text to paste into the chat; orbipix.applyState(obj) puts it back (the image and a
-//    brushed mask are not included — too big for a paste)
+//    short text to paste into the chat; orbipix.applyState(obj) puts it back. A brushed mask
+//    goes along as a small grayscale PNG (maskPng, ≤ 256 px, 8-bit); the image itself does not.
+const SHARE_MASK = 256;
+function maskPng() {
+  if (scene.maskMode !== 'custom' || !scene.gpu?.w) return null;
+  const { w, h } = scene.gpu, data = scene.gpu.read();
+  const k = Math.min(1, SHARE_MASK / Math.max(w, h)), W = Math.max(1, Math.round(w * k)), H = Math.max(1, Math.round(h * k));
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const ctx = c.getContext('2d'), im = ctx.createImageData(W, H);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {           // box filter down
+    const x0 = Math.floor(x * w / W), x1 = Math.max(x0 + 1, Math.floor((x + 1) * w / W));
+    const y0 = Math.floor(y * h / H), y1 = Math.max(y0 + 1, Math.floor((y + 1) * h / H));
+    let sum = 0;
+    for (let yy = y0; yy < y1; yy++) for (let xx = x0; xx < x1; xx++) sum += data[yy * w + xx];
+    const v = Math.round(Math.min(1, Math.max(0, sum / ((x1 - x0) * (y1 - y0)))) * 255);
+    im.data.set([v, v, v, 255], 4 * (y * W + x));
+  }
+  ctx.putImageData(im, 0, 0);
+  return c.toDataURL('image/png');
+}
 function collectState() {
   const v = view.view;
   return {
@@ -382,6 +400,7 @@ function collectState() {
     image: scene.img ? { w: scene.img.w, h: scene.img.h, video: !!scene.img.video, default: scene.img.isDefault || false } : null,
     mask: scene.maskMode, copies: scene.elements().list.length,
     canvas: { w: view.cssW, h: view.cssH }, ua: navigator.userAgent,
+    maskPng: maskPng(),
   };
 }
 async function copyState() {
@@ -390,7 +409,7 @@ async function copyState() {
   try { await navigator.clipboard.writeText(text); $('#hint').textContent = 'State copied — paste it into the Claude session.'; }
   catch { prompt('Copy this state:', text); }
 }
-function applyState(st) {
+async function applyState(st) {
   applySignature(st.signature, { params: st.params, motif: st.motif, history: false });
   editor.set(model.getSignature());
   if (st.place) scene.setPlace({ ...st.place, mode: model.geo.mode });
@@ -399,6 +418,11 @@ function applyState(st) {
   if (st.view && st.view.mode === model.geo.mode) Object.assign(view.view, st.view);
   setMode(st.mode === 'adjust' ? 'adjust' : 'pattern');
   if (st.mode === 'adjust' && st.tool) setTool(st.tool);
+  if (st.maskPng) {
+    const img = new Image(); img.src = st.maskPng;
+    await img.decode().catch(() => {});
+    if (img.naturalWidth) scene.maskFromImage(img);
+  } else if (st.mask === 'domain') scene.resetMask();
   commit();
   view.requestRender();
 }

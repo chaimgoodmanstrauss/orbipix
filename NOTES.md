@@ -52,70 +52,12 @@ Deploy (not yet done): `./deploy.sh` → https://chaimgoodmanstrauss.com/orbipix
 ## Sharing a state with a Claude session
 
 **Opt-Cmd-C** (Ctrl-Alt-C off the Mac) copies one line of JSON: URL, signature, parameters,
-placement, settings, mode and tool, view (V, R, zoom), image size, mask mode and canvas size.
-Paste it into the chat. To reproduce it, Claude runs `orbipix.applyState(<that JSON>)`, for example
-in `tools/browser-check.mjs`. The image and a brushed mask are left out because they are too big to
-paste; describe them, or drop the image file into the project folder.
-
-## Speed (2026-11-23, after "very laggy")
-
-The case was `456`, with the image covering the whole disk (621–768 copies) on a 950 px canvas at
-DPR 2 (1900² pixels). A frame took **265 ms**. Fixes:
-- **Draw straight to the canvas.** No hidden-canvas copy now that there is one view.
-- **Half resolution while interacting** (`PatternView.interacting()`, called on drag, wheel and
-  pinch), then sharp 180 ms after the last move. The overlay stays at full resolution.
-- **Domain mask: loop only over `near` copies.** Near now depends on the feather: tiles whose
-  boundary samples come within the feather radius of F, about 13 instead of 56.
-- **Brushed mask: skip copies with no weight.** After each mask change, a max-pyramid of the mask
-  plus an "active" pass flag each copy, and each block of 16, whose tile box (element texel 2,
-  uv) holds any weight. The shader skips inactive blocks and copies. Copies with zero weight at the
-  pixel skip the image sample. Checked: pixel-identical to the unculled render (3.6M px, max diff 0).
-- Hyperbolic tiles smaller than 4 image pixels were dropped for speed; now one pixel (see the crown section below).
-
-| `456` state, 1900² px | before | after |
-|---|---|---|
-| Frame, domain mask | 261 ms | 12 ms (3.5 interactive) |
-| Frame, brushed mask | 228 ms | 25 ms (6 interactive) |
-| Brush pass (8 dabs) + frame, interactive | — | 26 ms |
-
-## Averaging options and the crown (2026-11-23)
-
-- Four ways to colour an orbit: **Weighted average** (claim 1), **Highest weight wins** (claim 3),
-  **No mask: average all** (every copy that lands on the image counts equally), and **No mask: first
-  hit** (the first copy in list order that lands on the image; the list has the copies near F first,
-  then the rest outward from the image centre). With the two no-mask options the mask is ignored,
-  and Adjust mode shows the image fully opaque.
-- **The crown** (Kaleidesign's `crowntransformregistry`: every transform taking a point of F into the
-  image) is `Orbits.enumerate`. Completeness test: take 20,000 random image points, fold each, and
-  check that its copy is in the list. Hyperbolic tiles under 4 image pixels were cut, missing 0.4%
-  (`*2223`) to 1.9% (`456`, image covering the disk) of the image. Now only tiles under one image
-  pixel are cut, with a cap of 4096 copies: misses are 0.08% / 0.39%, and **every** missed tile is
-  smaller than one image pixel (largest 0.99). `632` and `*532` miss nothing.
-- Cost: "average all" has to visit every copy, so it is slow when the image reaches the rim:
-  278 ms (`*2223`, 979 copies) and 380 ms (`456`, 1209 copies) per frame at 1900² px, about 80–90 ms
-  while interacting. The other three modes took 4.5–12 ms. Fixed by the domain texture (below).
-
-## Domain texture (always on, 2026-11-23)
-
-An orbit's colour depends only on its point in F, so it is computed once per point of F into a texture
-(`CACHE_FS`, which is `orbitColor()` over a chart of F). Drawing then folds each pixel and samples
-that texture, with mipmaps and an explicit LOD. The texture is premultiplied: alpha 0 where no copy
-lands on the image.
-- **Chart:** in 2D, a box round F's edges in world coordinates; on the sphere, a box round F in the
-  stereographic chart about the comma (capped at ±4; the empty signature uses all of it). Texels
-  just outside F are folded first, so bilinear sampling across F's edges is seamless.
-- **Resolution:** as many texels as the screen shows of the most magnified copy of F, measured at
-  full resolution, in √2 buckets, capped at 2048.
-- **Recomputed only when its inputs change:** geometry, image (every video frame), mask, list of
-  copies, averaging option, feather, placement or resolution bucket. Panning and zooming within a
-  bucket only redraw.
-- Timings (1900² px): redraw 3–6 ms in every option. A recompute costs 5–10 ms (weighted, height,
-  first hit), 27 ms for "average all" on `*2223`, and 137 ms for "average all" on `456` (image over
-  the disk, 1209 copies). A brush stroke plus redraw takes about 20 ms.
-- Bug fixed on the way: when the texture was reallocated it got bound to the active unit (5, the
-  pass's own `uActive`). That made a feedback loop, GL refused the draw and the cache came out empty
-  after every signature change. The texture now lives on unit 6 only. Also, the empty signature's
-  one copy is now marked near (it drew nothing before).
+placement, settings, mode and tool, view (V, R, zoom), image size, mask mode and canvas size. A
+brushed or loaded mask goes along as `maskPng`, a grayscale PNG data URL, box-filtered down to at
+most 256 px on the long side. With a brushed mask the paste is about 14 KB; restored, the mean error
+is 0.0003 and the maximum 0.056 at brush edges. Paste it into the chat. To reproduce it, Claude runs
+`await orbipix.applyState(<that JSON>)`, for example in `tools/browser-check.mjs`. The image itself
+is left out; describe it, or drop the file into the project folder.
 
 ## Decisions
 
