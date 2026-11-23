@@ -24,21 +24,25 @@ Deploy (not yet done): `./deploy.sh` → https://chaimgoodmanstrauss.com/orbipix
   move, turn, scale and flip it (objects a and e). The default placement puts the domain mid-image,
   as in the patent's preferred embodiment.
 - **Masks.** `domain` (default) is F feathered by a signed distance (claims 10 and 11),
-  computed analytically, so it follows the domain live during reshaping. The shader computes it
-  only for elements flagged `near` (tiles near F). `custom` is a Float32 weight per mask pixel
-  (≤ 1024 px on the long side), baked from the domain mask on the first brush stroke.
-  Other mask options: **Uniform** (every orbit point equal) and **Load mask** (grayscale image).
-- **Contravariant brush** (patent, "Masks"; claim 12). At a brushed pixel the weight goes from
-  old to new, and every other pixel of its orbit is scaled by (1 − new)/(1 − old). Implemented as
-  a *gather*: each pixel near any copy of the brush is visited once, pulls back to its orbit point
-  inside the brush and takes that point's factor. This leaves no holes at any copy scale; the
-  first version used scatter-to-nearest-pixel and left speckle. Brushing works on either view, on
-  the image under the pointer.
+  computed analytically in the shader, so it follows the domain live during reshaping. The pattern
+  shader computes it only for elements flagged `near` (tiles near F). `custom` is an R32F texture
+  on the GPU (`js/MaskGPU.js`, ≤ 1024 px on the long side), baked from the domain mask by a GPU pass
+  on the first brush stroke. Other mask options: **Uniform** (every orbit point equal) and
+  **Load mask** (a grayscale image, uploaded).
+- **Contravariant brush** (patent, "Masks"; claim 12), as a GPU pass. Two mask textures take
+  turns as source and target. In one pass, each mask pixel y under the brush becomes old ± B(y);
+  any other pixel folds, tries each listed copy of its orbit, and at the first one under the brush,
+  x, is scaled by (1 − new_x)/(1 − old_x). Each pointer move's dabs go in one pass (B = soft union
+  1 − Π(1 − b_i)), at most 48 dabs per pass. Brushing works on either view.
+  History: CPU scatter (speckled) → CPU gather (~50 ms/dab on `*2223`) → CPU gather without the
+  per-pixel fold (~10 ms) → GPU (~3.4 ms per pass, however many dabs; see Benchmarks).
+- **One WebGL context** for both views: it draws into a hidden canvas that is copied into each
+  view's 2D canvas, so both views and the mask passes share textures. Undo reads the mask back
+  (~19 ms) once per committed change.
 - **Video / camera** input re-uploads each frame (claims 13 and 14). **⤓** saves the pattern view
   as a PNG.
 - **Views**: Source (the image where it lies, dimmed by weight, with the tiles on top) and Pattern,
-  side by side or one at a time. They share one view state. Two WebGL contexts each upload the image,
-  mask and element textures.
+  side by side or one at a time. They share one view state and one WebGL context.
 
 ## Decisions
 
@@ -54,8 +58,19 @@ Deploy (not yet done): `./deploy.sh` → https://chaimgoodmanstrauss.com/orbipix
 - Patent (g): blending several images in one pattern.
 - Claims 6–9: distorting maps, and non-periodic (substitution / random) tilings as orbit sources.
   The orbifold engine gives only group symmetries.
-- Brush speed: a dab costs about 30 ms on hyperbolic groups (125 tiles). Strokes space dabs at a
-  quarter of the brush size.
 - The element cap (768) truncates very large images or placements near the hyperbolic rim. The
   stats line says so when it happens.
 - Not checked on touch devices. No gallery icon yet; `project.json` has `"live": false`.
+
+## Benchmarks (2026-11-23, headless Chrome on this Mac, ANGLE/Metal; mask 1024×768, radius 25 mask px)
+
+| | `*2223` (125 copies) | `632` (73) | `*532` (120) |
+|---|---|---|---|
+| CPU gather, first version (ms/dab) | 50.6 | 102.8 | 29.9 |
+| CPU gather, no per-pixel fold (ms/dab) | 9.8 | 13.1 | 10.0 |
+| GPU, one pass per dab (ms, warm) | 3.4 | 2.7 | 4.5 |
+| GPU, 8 dabs in one pass (ms) | 3.3 | 3.1 | 8.0 |
+| Pattern frame (ms) | 2.2 | 2.3 | 2.7 |
+
+GPU rows: `*2223` measured after a warm-up run (cold: 5.1 / 10.3); `632` and `*532` measured once. GPU vs CPU (same single dabs): mean
+difference ≤ 7e-6, a few edge pixels up to 0.06 (where the brush's edge or the self-test falls between pixels).

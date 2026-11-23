@@ -6,6 +6,7 @@ import { PatternView } from './PatternView.js';
 import { FeatureTool } from './FeatureTool.js';
 import { SignatureEditor } from './SignatureEditor.js';
 import { Scene } from './Scene.js';
+import { MaskGPU } from './MaskGPU.js';
 import { PRESETS } from './presets.js';
 import { makeDefaultPicture } from './textures.js';
 import * as Sig from './Signature.js';
@@ -18,6 +19,7 @@ const highlight = new Highlight();
 const scene = new Scene(model);
 const view = new PatternView($('#pattern'), $('#overlay'), model, highlight, { scene, kind: 'pattern' });
 const sview = new PatternView($('#source'), $('#overlay-source'), model, highlight, { scene, kind: 'source', shareView: view });
+scene.gpu = new MaskGPU(view);
 let currentTool = 'navigate';
 
 // ── history (signature + parameters) ────────────────────────────────────

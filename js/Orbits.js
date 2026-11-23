@@ -93,7 +93,14 @@ export function apply3E(E, p) { const A = E.R; return [A[0] * p[0] + A[1] * p[1]
 
 export const identity = mode => mode === 'sph' ? { R: [1, 0, 0, 0, 1, 0, 0, 0, 1] } : { M: [[1, 0], [0, 0], [0, 0], [1, 0]], conj: false };
 export const applyE = (mode, E, p) => mode === 'sph' ? apply3E(E, p) : apply2E(E, p);
-const compose = (mode, A, B) => mode === 'sph' ? compose3(A, B) : compose2(A, B);
+export const compose = (mode, A, B) => mode === 'sph' ? compose3(A, B) : compose2(A, B);
+// g⁻¹. 2D: for g(z) = M(Z), Z = conj ? z̄ : z, the inverse is M⁻¹, conjugated entrywise when g reverses orientation
+export function invertE(mode, E) {
+  if (mode === 'sph') { const R = E.R; return { R: [R[0], R[3], R[6], R[1], R[4], R[7], R[2], R[5], R[8]] }; }
+  const [a, b, c, d] = E.M;
+  const Mi = [d, [-b[0], -b[1]], [-c[0], -c[1]], a];
+  return { M: E.conj ? Mi.map(cconj) : Mi, conj: E.conj };
+}
 
 // G_i: the element carrying F across face i (the inverse of the face's folding transform)
 export function faceGenerators(geo) {

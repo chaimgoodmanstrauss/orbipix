@@ -351,14 +351,15 @@ export class FeatureTool {
       for (let i = 1; i <= n; i++) pts.push([d.last[0] + (x - d.last[0]) * i / n, d.last[1] + (y - d.last[1]) * i / n]);
     } else pts.push([x, y]);
     d.last = [x, y];
+    const list = [];
     for (const [px, py] of pts) {
       const uv = this._uvAt(px, py), uv1 = this._uvAt(px + 2, py);
       if (!uv || !uv1 || !inUV(uv)) continue;
       const [mw, mh] = sc.maskDims();
       const maskPerCss = Math.hypot((uv1[0] - uv[0]) * mw, (uv1[1] - uv[1]) * mh) / 2;
-      const R = Math.max(1.5, sc.settings.brush / 2 * maskPerCss);
-      sc.dab(uv, R, sc.settings.strength * 0.5, d.sign);
+      list.push({ uv, R: Math.max(1.5, sc.settings.brush / 2 * maskPerCss), s: sc.settings.strength * 0.5 });
     }
+    sc.dabs(list, d.sign);          // the whole pointer move in one pass
   }
 
   _startPinch() {

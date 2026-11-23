@@ -21,32 +21,15 @@ const MAXF = 64, WIDTH = 16;
 const VS = `#version 300 es
 in vec2 aPos; void main(){ gl_Position = vec4(aPos, 0., 1.); }`;
 
-const FS = `#version 300 es
+// GLSL shared by the pattern shader and the mask passes (MaskGPU.js)
+export const COMMON = `#version 300 es
 precision highp float;
 precision highp int;
-uniform sampler2D uData;
-uniform sampler2D uMotif;
-uniform int uMode, uNF, uNI, uNP;
-uniform vec2 uCenter;      // canvas centre, device px
-uniform float uS;          // device px per screen unit
-uniform vec2 uOff;         // screen-unit offset (zoom about pointer)
-uniform vec4 uV0, uV1;     // screen -> world Möbius  (a, b | c, d)
-uniform mat3 uR;           // sphere: view -> world
-uniform vec3 uCommaC, uCommaE1, uCommaE2;
-uniform float uCommaSize;
-uniform mat2 uCommaA;        // motif frame (2D): uv = A (p - c) / size
-uniform int uCommaHL;        // 0 none, 1 hovered, 2 selected
-uniform float uDpr;
-uniform float uDim;
-uniform int uHomeTint;
-// bitmap
-uniform sampler2D uImg, uMask, uEl;
-uniform int uShow;          // 0 pattern, 1 source (the image as it lies in the world)
-uniform int uGuides, uShowComma, uHasImg, uNG, uMaskMode, uHeight, uFlip;
+uniform sampler2D uData, uEl;
+uniform int uMode, uNF, uNG, uFlip;
 uniform vec4 uPlace;        // image placement: c.xy, a.xy (complex)
 uniform vec2 uK;            // (L/W, L/H)
-uniform float uPole, uTexPer, uFeather;
-out vec4 outColor;
+uniform float uPole, uFeather;
 
 vec4 T(int c, int r) { return texelFetch(uData, ivec2(c, r), 0); }
 vec2 cmul(vec2 a, vec2 b){ return vec2(a.x*b.x - a.y*b.y, a.x*b.y + a.y*b.x); }
@@ -88,6 +71,76 @@ float sdom(vec2 q, vec3 Q){
   return s;
 }
 float wdom(vec2 q, vec3 Q){ return smoothstep(-uFeather, uFeather, sdom(q, Q)); }
+// image uv -> image plane -> world (sphere: inverse stereographic from the pole)
+vec2 planeOfUV(vec2 uv){ vec2 s = vec2((uv.x - .5) * 2. / uK.x, (.5 - uv.y) * 2. / uK.y); if (uFlip == 1) s.y = -s.y; return uPlace.xy + cmul(uPlace.zw, s); }
+vec3 sphOfPlane(vec2 z){ float q = dot(z, z); return vec3(2. * z, uPole * (q - 1.)) / (1. + q); }
+// fold into the fundamental domain (the engine's rule); false if it does not settle
+bool foldP(inout vec2 p, inout vec3 P){
+  bool sph = uMode == 2;
+  for (int it = 0; it < 90; it++) {
+    bool moved = false;
+    for (int i = 0; i < ${MAXF}; i++) {
+      if (i >= uNF) break;
+      vec4 meta = T(11, i); vec4 w = T(0, i);
+      float dd = sph ? dot(w.xyz, P) : dist2(w, meta.x, p);
+      if (dd <= 0.) continue;
+      bool inb = true; int nb = int(meta.y);
+      for (int j = 0; j < 4; j++) { if (j >= nb) break; if (dist2(T(1 + j, i), typeOf(i, j), p) <= 0.) { inb = false; break; } }
+      if (!inb) continue;
+      int nt = int(meta.z);
+      for (int j = 0; j < 6; j++) {
+        if (j >= nt) break;
+        vec4 sp = T(5 + j, i);
+        if (sph) P = P - 2. * dot(sp.xyz, P) * sp.xyz; else p = refl2(sp, typeOf(i, 4 + j), p).xy;
+      }
+      moved = true; break;
+    }
+    if (!moved) return true;
+  }
+  return false;
+}
+// the e-th listed group element applied to a folded point; gd = |g'| (2D)
+void applyEl(int e, vec2 p, vec3 P, out vec2 q, out vec3 Q, out float gd){
+  vec4 t0 = E(0, e), t1 = E(1, e), t3 = E(3, e);
+  q = vec2(0.); Q = vec3(0.); gd = 1.;
+  if (uMode == 2) { vec4 t2 = E(2, e); Q = vec3(dot(t0.xyz, P), dot(t1.xyz, P), dot(t2.xyz, P)); }
+  else {
+    vec2 Z = t3.x > 0.5 ? vec2(p.x, -p.y) : p;
+    vec2 den = cmul(t1.xy, Z) + t1.zw;
+    q = cdiv(cmul(t0.xy, Z) + t0.zw, den);
+    gd = 1. / dot(den, den);
+  }
+}
+`;
+
+const FS = COMMON + `
+uniform sampler2D uMotif, uImg, uMask;
+uniform int uNI, uNP;
+uniform vec2 uCenter;      // canvas centre, device px
+uniform float uS;          // device px per screen unit
+uniform vec2 uOff;         // screen-unit offset (zoom about pointer)
+uniform vec4 uV0, uV1;     // screen -> world Möbius  (a, b | c, d)
+uniform mat3 uR;           // sphere: view -> world
+uniform vec3 uCommaC, uCommaE1, uCommaE2;
+uniform float uCommaSize;
+uniform mat2 uCommaA;        // motif frame (2D): uv = A (p - c) / size
+uniform int uCommaHL;        // 0 none, 1 hovered, 2 selected
+uniform float uDpr;
+uniform float uDim;
+uniform int uHomeTint;
+uniform int uShow;          // 0 pattern, 1 source (the image as it lies in the world)
+uniform int uGuides, uShowComma, uHasImg, uMaskMode, uHeight;
+uniform float uTexPer;
+out vec4 outColor;
+// the mask, bilinear by hand (float textures need not be filterable)
+float maskAt(vec2 uv){
+  ivec2 n = textureSize(uMask, 0);
+  vec2 s = uv * vec2(n) - .5; ivec2 i = ivec2(floor(s)); vec2 f = fract(s); ivec2 M = n - 1;
+  float a = texelFetch(uMask, clamp(i, ivec2(0), M), 0).r, b = texelFetch(uMask, clamp(i + ivec2(1, 0), ivec2(0), M), 0).r;
+  float c = texelFetch(uMask, clamp(i + ivec2(0, 1), ivec2(0), M), 0).r, d = texelFetch(uMask, clamp(i + ivec2(1, 1), ivec2(0), M), 0).r;
+  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
 
 void main(){
   vec2 px = gl_FragCoord.xy;
@@ -166,20 +219,14 @@ void main(){
     vec3 swc = vec3(0.), sumc = vec3(0.), bestc = vec3(0.);
     for (int e = 0; e < 1024; e++) {
       if (e >= uNG) break;
-      vec4 t0 = E(0, e), t1 = E(1, e), t3 = E(3, e);
-      vec2 q = vec2(0.); vec3 Q = vec3(0.); float gd = 1.;
-      if (sph) { vec4 t2 = E(2, e); Q = vec3(dot(t0.xyz, P), dot(t1.xyz, P), dot(t2.xyz, P)); }
-      else {
-        vec2 Z = t3.x > 0.5 ? vec2(p.x, -p.y) : p;
-        vec2 den = cmul(t1.xy, Z) + t1.zw;
-        q = cdiv(cmul(t0.xy, Z) + t0.zw, den);
-        gd = 1. / dot(den, den);
-      }
+      vec4 t3 = E(3, e);
+      vec2 q; vec3 Q; float gd;
+      applyEl(e, p, P, q, Q, gd);
       vec2 uv = uvOf(planeOf(q, Q));
       if (!inImg(uv)) continue;
       float lod = log2(max(gd * planeD(Q) * uTexPer * pxw, 1.));
       vec4 c = textureLod(uImg, uv, lod);
-      float w = uMaskMode == 1 ? texture(uMask, uv).r : (t3.y > 0.5 ? wdom(q, Q) : 0.);
+      float w = uMaskMode == 1 ? maskAt(uv) : (t3.y > 0.5 ? wdom(q, Q) : 0.);
       w *= c.a;
       sw += w; swc += w * c.rgb; cnt += 1.; sumc += c.rgb;
       if (w > best) { best = w; bestc = c.rgb; }
@@ -194,7 +241,7 @@ void main(){
     if (inImg(uv)) {
       float pxr = sph ? 1. / uS : J / uS;
       vec4 c = textureLod(uImg, uv, log2(max(planeD(P0) * uTexPer * pxr, 1.)));
-      float w = uMaskMode == 1 ? texture(uMask, uv).r : wdom(p0, P0);
+      float w = uMaskMode == 1 ? maskAt(uv) : wdom(p0, P0);
       col = mix(mix(vec3(0.12), c.rgb, 0.32), c.rgb, clamp(w, 0., 1.));
     } else col = mix(col, paper, 0.4);
   }
@@ -306,6 +353,8 @@ void main(){
   outColor = vec4(col, 1.);
 }`;
 
+// state that lives with the shared WebGL context, not with one view
+const SHARED = ['gl', 'prog', 'vao', 'uni', 'dataTex', 'motifTex', 'imgTex', 'elTex', '_imgVer', '_elVer', '_ng', '_counts', '_uploadedVersion', '_dataDirty'];
 function hexToRgb(h) {
   const n = parseInt(h.slice(1), 16);
   return [(n >> 16 & 255) / 255, (n >> 8 & 255) / 255, (n & 255) / 255];
@@ -327,6 +376,11 @@ export class PatternView {
     this.dim = 0;
     this._dirty = true;
     this._listeners = this._listeners || [];
+    // one WebGL context for every view (so they can share the mask texture): it draws
+    // into a hidden canvas, which is copied into this view's 2D canvas
+    this.G = opts.shareView ? opts.shareView.G : { canvas: document.createElement('canvas'), views: [] };
+    this.G.views.push(this);
+    this.ctx2d = canvas.getContext('2d');
     this._initGL();
     this._resize();
     new ResizeObserver(() => { this._resize(); this.requestRender(); }).observe(canvas.parentElement);
@@ -334,13 +388,21 @@ export class PatternView {
   }
 
   onViewChange(cb) { this._listeners.push(cb); }
+  static {
+    for (const k of SHARED) Object.defineProperty(this.prototype, k, { get() { return this.G?.[k]; }, set(v) { this.G[k] = v; } });
+  }
 
   _initGL() {
-    const gl = this.canvas.getContext('webgl2', { antialias: false, preserveDrawingBuffer: true });
+    if (this.G.gl && !this.G.lost) return;
+    const gl = this.G.canvas.getContext('webgl2', { antialias: false, preserveDrawingBuffer: true });
     this.gl = gl;
     if (!gl) { this._fail('This browser has no WebGL2, so the pattern cannot be drawn.'); return; }
-    this.canvas.addEventListener('webglcontextlost', e => { e.preventDefault(); this._fail('The graphics context was lost. Reload the page to draw again.'); });
-    this.canvas.addEventListener('webglcontextrestored', () => { this._initGL(); this._dataDirty = true; this.requestRender(); this._unfail(); });
+    this.G.floatLinear = !!gl.getExtension('OES_texture_float_linear');
+    this.G.floatRender = !!gl.getExtension('EXT_color_buffer_float');
+    if (!this.G.listening) {
+      this.G.listening = true;
+      this.G.canvas.addEventListener('webglcontextlost', e => { e.preventDefault(); this.G.lost = true; this.G.views.forEach(v => v._fail('The graphics context was lost. Reload the page to draw again.')); });
+    }
     const sh = (type, src) => {
       const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
       if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
@@ -373,8 +435,8 @@ export class PatternView {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     const mk = () => { const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); return t; };
-    this.imgTex = mk(); this.maskTex = mk(); this.elTex = mk();
-    this._imgVer = this._maskVer = this._elVer = -1;
+    this.imgTex = mk(); this.elTex = mk();
+    this._imgVer = this._elVer = -1;
     this._dataDirty = true;
   }
 
@@ -391,15 +453,6 @@ export class PatternView {
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
       this._imgVer = sc.img.version;
-    }
-    if (sc.maskMode === 'custom' && sc.mask && this._maskVer !== sc.maskVersion) {
-      gl.bindTexture(gl.TEXTURE_2D, this.maskTex);
-      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R16F, sc.mask.w, sc.mask.h, 0, gl.RED, gl.FLOAT, sc.mask.data);
-      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-      this._maskVer = sc.maskVersion;
     }
     const els = sc.elements();
     if (this._elVer !== sc.elVersion) {
@@ -550,6 +603,14 @@ export class PatternView {
     if (this._raf) return;
     this._raf = requestAnimationFrame(() => { this._raf = 0; this.render(); });
   }
+  // bring the shared textures (domain data, image, elements) up to date without drawing
+  prepare() {
+    const g = this.model.geo;
+    if (!this.gl || !g) return false;
+    if (this._dataDirty || this._uploadedVersion !== g.version) this._upload();
+    if (this.scene && this.scene.img && this.scene.place) this._uploadScene();
+    return true;
+  }
   markDataDirty() { this._dataDirty = true; this.partners.forEach(p => { p._dataDirty = true; }); this.requestRender(); }
 
   // ── data texture ───────────────────────────────────────────────────────
@@ -605,6 +666,8 @@ export class PatternView {
     const gl = this.gl, g = this.model.geo;
     if (!gl || !this.prog || gl.isContextLost()) return;
     if (this.canvas.width < 2 || !this.canvas.offsetParent) return;
+    const Gc = this.G.canvas;
+    if (Gc.width !== this.canvas.width || Gc.height !== this.canvas.height) { Gc.width = this.canvas.width; Gc.height = this.canvas.height; }
     if (g && this.view.mode !== g.mode) this.resetView();
     if (g && (this._dataDirty || this._uploadedVersion !== g.version)) this._upload();
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
@@ -646,14 +709,14 @@ export class PatternView {
     const has = !!(sc && sc.img && sc.place && g && !this.model.isBad());
     if (has) this._uploadScene();
     gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, this.imgTex); gl.uniform1i(U.uImg, 2);
-    gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, this.maskTex); gl.uniform1i(U.uMask, 3);
+    gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, sc?.gpu?.texture() || null); gl.uniform1i(U.uMask, 3);
     gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, this.elTex); gl.uniform1i(U.uEl, 4);
     gl.uniform1i(U.uHasImg, has && this._imgVer >= 0 ? 1 : 0);
     gl.uniform1i(U.uShow, this.kind === 'source' ? 1 : 0);
     gl.uniform1i(U.uGuides, st.guides ? 1 : 0);
     gl.uniform1i(U.uShowComma, st.showComma || !has ? 1 : 0);
     gl.uniform1i(U.uNG, has ? this._ng || 0 : 0);
-    gl.uniform1i(U.uMaskMode, has && sc.maskMode === 'custom' && sc.mask ? 1 : 0);
+    gl.uniform1i(U.uMaskMode, has && sc.maskMode === 'custom' ? 1 : 0);
     gl.uniform1i(U.uHeight, st.avg === 'height' ? 1 : 0);
     if (has) {
       const pl = sc.place, L = Math.max(sc.img.w, sc.img.h);
@@ -664,7 +727,10 @@ export class PatternView {
       gl.uniform1f(U.uTexPer, L / (2 * Math.hypot(pl.a[0], pl.a[1])));
       gl.uniform1f(U.uFeather, sc.featherRadius());
     }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    this.ctx2d.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    this.ctx2d.drawImage(Gc, 0, 0);
     this.drawOverlay();
   }
 
