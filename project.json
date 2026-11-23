@@ -1,1 +1,1 @@
-{"name": "Orbipix", "cat": "Geometry", "icon": "star", "desc": "Turn any bitmap into a symmetric pattern by weighting each orbit with a brushable mask (contravariant distributions).", "path": "orbipix/", "live": false}
+{"name": "Orbipix", "cat": "Geometry", "icon": "star", "desc": "Turn any bitmap into a symmetric pattern by weighting each orbit with a brushable mask (contravariant distributions).", "path": "orbipix/", "live": true, "img": "icons/orbipix.jpg"}

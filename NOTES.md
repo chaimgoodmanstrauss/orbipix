@@ -9,7 +9,7 @@ Run: `python3 tools/serve.py <port>` and open `http://localhost:<port>/`. It is 
 is why an option-click fix seemed not to work on 2026-11-23. Use it for the "browser" trigger too.
 Console: `window.orbipix` (`model`, `view`, `scene`, `tool`, `setTool`, `setMode`, `collectState`, `applyState`, …).
 Checks: `node tools/browser-check.mjs <url> [steps.json]`; `node --import ./tools/register.mjs tools/test-model.mjs`.
-Deploy (not yet done): `./deploy.sh` → https://chaimgoodmanstrauss.com/orbipix/.
+Deploy: `./deploy.sh` → https://chaimgoodmanstrauss.com/orbipix/.
 
 ## The method, as implemented
 

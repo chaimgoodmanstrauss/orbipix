@@ -247,10 +247,10 @@ export class FeatureTool {
         if (d.rotate || e.shiftKey) {
           const c = sc.place.c, a0 = [d.last[0] - c[0], d.last[1] - c[1]], a1 = [z[0] - c[0], z[1] - c[1]];
           const t = Math.atan2(a1[1], a1[0]) - Math.atan2(a0[1], a0[0]);
-          sc.turnPlace([Math.cos(t), Math.sin(t)], c);
-        } else sc.movePlace([z[0] - d.last[0], z[1] - d.last[1]]);
+          sc.turnPlaceRigid(t, c);
+        } else sc.slidePlace(d.last, z);
       }
-      d.last = z;
+      d.last = this._plane(x, y);          // the frame may have moved with the image
       return;
     }
     if (d.kind === 'brush') { this._brushAt(x, y); return; }

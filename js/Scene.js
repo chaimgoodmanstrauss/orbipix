@@ -14,7 +14,7 @@
 // maskMode 'domain' = the kind's starting mask, drawn analytically (flat height / feathered
 // domain, which follows the domain live); 'custom' = a float texture on the GPU (MaskGPU.js).
 
-import { enumerate, planeOfWorld, featherUnit, faceGenerators, elementOfWord, applyE, compose, invertE, uvOfWorld } from './Orbits.js';
+import { enumerate, planeOfWorld, worldOfPlane, identity, featherUnit, faceGenerators, elementOfWord, applyE, compose, invertE, uvOfWorld } from './Orbits.js';
 import { C } from './geom.js';
 
 const MAX_IMG = 2048, MAX_MASK = 1024;
@@ -127,6 +127,25 @@ export class Scene {
   scalePlace(f, about) { this.setPlace({ c: C.add(about, C.scale(C.sub(this.place.c, about), f)), a: C.scale(this.place.a, f) }); }
   turnPlace(rot, about) { this.setPlace({ c: C.add(about, C.mul(C.sub(this.place.c, about), rot)), a: C.mul(this.place.a, rot) }); }
   flip() { this.setPlace({ flip: !this.place.flip }); }
+  // Drag / turn the image rigidly in the geometry's own metric. In the plane, moving c is an isometry;
+  // in the disk or on the sphere it is not (the image grows towards the rim / the far pole), so there
+  // the image frame is moved by an isometry E instead: iso ← iso∘E, c and a unchanged.
+  slidePlace(from, to) {
+    const mode = this.place.mode;
+    if (mode !== 'hyp' && mode !== 'sph') { this.movePlace(C.sub(to, from)); return; }
+    const E = mode === 'hyp' ? hypSlide(from, to) : sphSlide(worldOfPlane('sph', from, this.place.pole || 1), worldOfPlane('sph', to, this.place.pole || 1));
+    if (E) this._isoAfter(E);
+  }
+  turnPlaceRigid(t, about) {
+    const mode = this.place.mode;
+    if (mode === 'euc') { this.turnPlace([Math.cos(t), Math.sin(t)], about); return; }
+    const E = mode === 'hyp' ? hypTurn(about, t) : sphTurn(worldOfPlane('sph', about, this.place.pole || 1), t);
+    this._isoAfter(E);
+  }
+  _isoAfter(E) {
+    const mode = this.place.mode, iso = compose(mode, this.place.iso || identity(mode), E);
+    this.setPlace({ iso: mode === 'sph' ? { R: iso.R } : { M: iso.M, conj: iso.conj } });
+  }
 
   // ── elements ───────────────────────────────────────────────────────────
   _invalidate() { this._elsKey = ''; }
@@ -239,3 +258,31 @@ export function clearWhiteBackground(d, w, h) {
   }
   return true;
 }
+
+// ── isometries for rigid image moves ─────────────────────────────────────────
+const tau = a => ({ M: [[1, 0], a, C.conj(a), [1, 0]], conj: false });          // disk translation taking 0 to a
+const neg = a => [-a[0], -a[1]];
+// the disk translation along the geodesic through p and q that takes p to q
+function hypSlide(p, q) {
+  if (C.abs(p) >= 1 || C.abs(q) >= 1) return null;
+  const w = C.div(C.sub(q, p), C.sub([1, 0], C.mul(C.conj(p), q)));               // τ_{−p}(q)
+  return compose('hyp', compose('hyp', tau(p), tau(w)), tau(neg(p)));
+}
+// the disk rotation by t about c
+function hypTurn(c, t) {
+  const h = [Math.cos(t / 2), Math.sin(t / 2)];
+  return compose('hyp', compose('hyp', tau(c), { M: [h, [0, 0], [0, 0], C.conj(h)], conj: false }), tau(neg(c)));
+}
+// rotation by t about the unit axis n (Rodrigues), row-major
+function rot3(n, t) {
+  const [x, y, z] = n, c = Math.cos(t), s = Math.sin(t), k = 1 - c;
+  return { R: [c + x * x * k, x * y * k - z * s, x * z * k + y * s, y * x * k + z * s, c + y * y * k, y * z * k - x * s, z * x * k - y * s, z * y * k + x * s, c + z * z * k] };
+}
+// the sphere rotation along the great circle through P and Q taking P to Q
+function sphSlide(P, Q) {
+  const n = [P[1] * Q[2] - P[2] * Q[1], P[2] * Q[0] - P[0] * Q[2], P[0] * Q[1] - P[1] * Q[0]];
+  const s = Math.hypot(...n), c = P[0] * Q[0] + P[1] * Q[1] + P[2] * Q[2];
+  if (s < 1e-12) return null;
+  return rot3(n.map(v => v / s), Math.atan2(s, c));
+}
+const sphTurn = (P, t) => rot3(P, t);
