@@ -10,6 +10,9 @@ is why an option-click fix seemed not to work on 2026-11-23. Use it for the "bro
 Console: `window.orbipix` (`model`, `view`, `scene`, `tool`, `setTool`, `setMode`, `collectState`, `applyState`, …).
 Checks: `node tools/browser-check.mjs <url> [steps.json]`; `node --import ./tools/register.mjs tools/test-model.mjs`.
 Deploy: `./deploy.sh` → https://chaimgoodmanstrauss.com/orbipix/.
+  Cloudflare and browsers cache .js/.css for 4 h, so `deploy.sh` uploads an `index.html` made by
+  `tools/version-index.py`: every module gets `?v=<content hash>` through the import map (local
+  `index.html` stays plain).
 
 ## The method, as implemented
 
