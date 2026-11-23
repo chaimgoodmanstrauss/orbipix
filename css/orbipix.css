@@ -74,7 +74,6 @@ button { font: inherit; color: inherit; }
 .slider input { width: 100%; }
 .radios label { font-size: 13.5px; display: inline-flex; gap: 5px; align-items: center; margin-right: 10px; }
 .drop { position: fixed; inset: 12px; border: 3px dashed var(--ink); border-radius: 16px; background: rgba(251,250,246,.85); display: grid; place-items: center; font-size: 28px; z-index: 10; pointer-events: none; }
-.pane-pattern.is-bad #pattern { opacity: 0.45; }
 .tip {
   position: absolute; left: 0; top: 0; pointer-events: none; z-index: 3;
   background: var(--paper); color: var(--ink); border: 1px solid var(--ink); border-radius: 6px;
@@ -158,3 +157,6 @@ button { font: inherit; color: inherit; }
 
 .drop[hidden] { display: none; }
 .slider[hidden] { display: none; }
+/* a signature no pattern has: its characters marked like a misspelling */
+.sig-editor.is-bad .cells { border-color: var(--mirror); background: #fdf0ee; }
+.sig-editor.is-bad .cell { color: var(--mirror); border-bottom-color: transparent; text-decoration: underline wavy var(--mirror); text-decoration-thickness: 1.5px; text-underline-offset: 5px; }

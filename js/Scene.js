@@ -103,11 +103,18 @@ export class Scene {
   _invalidate() { this._elsKey = ''; }
   elements() {
     const g = this.model.geo;
-    if (!g || !this.img || !this.place || this.model.isBad()) return { list: [], nearCount: 0 };
+    if (!g || !this.img || !this.place) return { list: [], nearCount: 0 };
     const fr = this.featherRadius();
     const key = `${g.version}|${g.mode}|${JSON.stringify(this.place)}|${this.img.w}x${this.img.h}|${g.comma.c}|${fr.toFixed(4)}`;
     if (key !== this._elsKey) {
-      if (this.place.mode !== g.mode) { this.fit(); return this.elements(); }
+      if (this.place.mode !== g.mode) {
+        // a change of geometry: remember this placement for its geometry, bring back the new one's
+        (this._placeByMode ||= {})[this.place.mode] = { ...this.place };
+        const back = this._placeByMode[g.mode];
+        if (back) { this.place = { ...back }; this._invalidate(); this.emit('place'); }
+        else this.fit();
+        return this.elements();
+      }
       this._els = enumerate(g, this.place, this.img, { feather: fr });
       this._elsKey = key;
       this.elVersion++;

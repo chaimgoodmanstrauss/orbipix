@@ -154,6 +154,20 @@ one not parallel to it. Checked on all 17 wallpaper groups: one cell is 300 px o
 The fundamental domain is 150–411 px, depending on how many copies make up a cell. The old fixed
 scale was 0.32.
 
+## Bad signatures are drawn as the identity (2026-11-23)
+
+A signature no pattern has (`N`, `MN`, `*N`, `*MN` with M ≠ N, e.g. `23`, `5`, `*45`) used to show
+the last good pattern faded. Now the model builds the no-symmetry geometry for it (`_trivial`,
+sphere, one copy), so the image is shown plainly. The signature keeps its text, and the editor
+marks it: red characters with a wavy red underline, a pale red box, and the verdict reads "No
+pattern has this signature. Shown with no symmetry." Everything stays usable on it (image tools,
+alt-click to add a cone, …).
+
+Because a detour through a bad signature switches to the sphere and back, **each geometry remembers
+its image placement and view**: `Scene._placeByMode` and `viewByMode` in `main.js`. Going back to a
+geometry restores them instead of refitting or resetting. Checked: typing `*2223` → `*2` (bad) →
+`*2223` keeps both. Loading by URL hash still resets the view.
+
 ## Decisions
 
 - Undo covers the signature, parameters, comma, image placement and mask (each history entry keeps a

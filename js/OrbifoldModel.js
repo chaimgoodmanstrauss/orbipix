@@ -87,7 +87,14 @@ export class OrbifoldModel {
     this.error = '';
     this.motif = opts.motif || null;      // user-placed motif; null = automatic
     if (opts.params) Object.assign(this.values, opts.params);
-    if (this.bad) { this.emit('change', { kind: 'signature', bad: true }); return true; }
+    if (this.bad) {
+      // no pattern has this signature: show it as the identity (no symmetry at all), keep the text
+      this.params.reset(); this.wg = null; this._eucFD = null; this._eucName = null;
+      this.mode = 'sph'; this._trivial = true;
+      this._rebuildGeometry({ quick: false });
+      this.emit('change', { kind: 'signature', bad: true });
+      return true;
+    }
     try {
       this._buildGroup();
       this._rebuildGeometry({ quick: false });
@@ -165,7 +172,7 @@ export class OrbifoldModel {
 
   // ── derived geometry ───────────────────────────────────────────────────
   _rebuildGeometry({ quick }) {
-    if (this.bad) return;
+    if (this.bad && !this._trivial) return;
     const prev = this.geo;
     let geo;
     if (this._trivial) geo = { mode: 'sph', faces: [], inner: [], points: [] };

@@ -45,7 +45,7 @@ function saveSoon() {
   if (!booted) return;
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    if (model.bad || !scene.img) return;
+    if (!scene.img) return;
     const st = collectState(); delete st.maskPng;
     Saved.set('state', st);
     Saved.set('mask', scene.maskSnapshot());
@@ -82,7 +82,7 @@ function writeHash() {
   const m = model.bad ? null : model.motif;      // user-placed comma: m=c…,frame…,size
   if (m) parts.push('m=' + [...m.c, ...(m.A || [...m.e1, ...m.e2]), m.size].map(num).join(','));
   const pl = scene.place;
-  if (pl && !model.bad) parts.push('p=' + [...pl.c, ...pl.a, pl.flip ? 1 : 0, pl.pole || 1].map(num).join(','));
+  if (pl) parts.push('p=' + [...pl.c, ...pl.a, pl.flip ? 1 : 0, pl.pole || 1].map(num).join(','));
   history.replaceState(null, '', '#' + parts.join('&'));
 }
 function readHash() {
@@ -108,12 +108,17 @@ function readHash() {
 }
 
 // ── signature changes ───────────────────────────────────────────────────
+const viewByMode = {};            // the view as last left in each geometry (a detour through a bad signature keeps it)
 function applySignature(text, { params, motif = null, history: hist = true, resetView = false } = {}) {
   const prevMode = model.geo?.mode;
+  if (prevMode) viewByMode[prevMode] = JSON.parse(JSON.stringify({ mode: view.view.mode, V: view.view.V, R: view.view.R, zoom: view.view.zoom, off: view.view.off }));
   if (text !== model.getSignature() || !motif) tool?.select(false);
   if (text !== model.getSignature()) scene.symmetryChanged();
   model.setSignature(text, { params, motif });
-  if (!model.bad && (resetView || model.geo.mode !== prevMode)) view.resetView();
+  if (model.geo && model.geo.mode !== prevMode && !resetView && viewByMode[model.geo.mode]) {
+    Object.assign(view.view, JSON.parse(JSON.stringify(viewByMode[model.geo.mode])));   // back to where this geometry was left
+    view.requestRender();
+  } else if (model.geo && (resetView || model.geo.mode !== prevMode)) view.resetView();
   if (hist) commit();
 }
 
@@ -147,7 +152,7 @@ const tool = new FeatureTool({ ...toolOpts, view, canvas: $('#pattern'), tip: $(
 // ── reacting to model changes ───────────────────────────────────────────
 model.on('change', ev => {
   const bad = model.isBad();
-  view.dim = bad ? 0.55 : 0;
+  view.dim = 0;                      // a bad signature is drawn as the identity, not faded
   $('.pane-pattern').classList.toggle('is-bad', bad);
   view.markDataDirty();
   renderStats();
@@ -168,7 +173,7 @@ function renderCaption() {
 
 function renderHint() {
   const g = model.geo;
-  if (model.isBad()) { $('#hint').textContent = 'No pattern has this signature — the last good one is shown faded.'; return; }
+  if (model.isBad()) { $('#hint').textContent = 'No pattern has this signature, so it is shown with no symmetry at all (the identity).'; return; }
   if (!g) return;
   if (currentTool === 'move') { $('#hint').textContent = 'Adjusting the image: drag to move it, shift-drag to turn it, wheel to scale it · alt-drag pans · P returns to the pattern.'; return; }
   if (currentTool === 'brush' || currentTool === 'erase') {

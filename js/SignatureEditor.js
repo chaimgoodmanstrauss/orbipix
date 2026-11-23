@@ -206,7 +206,7 @@ export class SignatureEditor {
     const bad = Sig.isBad(T);
     const curv = Sig.curvatureOf(T);
     let v = `<b>$${price.toString()}</b> `;
-    if (bad) v += '— <span class="bad">No pattern has this signature.</span>';
+    if (bad) v += '— <span class="bad">No pattern has this signature.</span> Shown with no symmetry.';
     else if (T.length === 0) v += '— a pattern with no symmetry at all';
     else if (curv > 0) {
       const two = new Sig.Frac(2).sub(price);

@@ -921,7 +921,7 @@ export class PatternView {
     gl.uniform1i(U.uHomeTint, 1);
     // bitmap
     const sc = this.scene, st = sc ? sc.settings : {};
-    const has = !!(sc && sc.img && sc.place && g && !this.model.isBad());
+    const has = !!(sc && sc.img && sc.place && g);
     if (has) this._uploadScene();
     const act = has && sc.maskMode === 'custom' && sc.gpu && st.avg === 'mean' ? sc.gpu.activeTexture(sc, this._ng || 0, this._elVer) : null;
     // textures on fixed units for both programs

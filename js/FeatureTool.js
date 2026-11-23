@@ -44,7 +44,7 @@ export class FeatureTool {
   // ── hit testing ────────────────────────────────────────────────────────
   hitTest(x, y) {
     const g = this.model.geo;
-    if (!g || this.model.isBad()) return null;
+    if (!g) return null;
     // lattice handles (home copy only)
     for (const h of g.handles || []) {
       if (h.fixed) continue;
@@ -164,7 +164,7 @@ export class FeatureTool {
     if (this.pointers.size === 2) { this._startPinch(); return; }
     if (e.button !== undefined && e.button !== 0) return;
     const tool = this.getTool ? this.getTool() : 'navigate';
-    if (tool !== 'navigate' && this.scene?.img && !this.model.isBad() && !e.altKey) {
+    if (tool !== 'navigate' && this.scene?.img && !e.altKey) {
       if (tool === 'move') this.drag = { kind: 'place', last: this._plane(x, y), x, y, rotate: e.shiftKey };
       else { this.drag = { kind: 'brush', sign: tool === 'erase' ? -1 : 1, last: null }; this._brushAt(x, y); }
       this._setHover(null); this._cursor(null);
@@ -402,7 +402,7 @@ export class FeatureTool {
   // pattern's (point, edge) within reach
   _addCone(x, y) {
     const g0 = this.model.geo;
-    if (!g0 || this.model.isBad() || !this.onAddCone) return;
+    if (!g0 || !this.onAddCone) return;
     const pr = this.view.probe(x, y);
     if (!pr || !pr.ok) return;
     const near = g0.points.some(pt => Math.hypot(...pt.pos.map((v, k) => v - pr.p[k])) * pr.scale < ADD_CLEAR);
@@ -410,7 +410,7 @@ export class FeatureTool {
     this._withImagePinned(x, y, () => {
       const i = this.onAddCone();
       const g = this.model.geo;
-      if (i === undefined || !g || this.model.isBad()) return;
+      if (i === undefined || !g) return;
       const pt = g.points.find(p => (p.tokens || []).includes(i)) || g.points.find(p => p.kind === 'cone' && p.n === 2);
       if (pt) this.view.placeAt(pt.pos, x, y);
     });
@@ -431,7 +431,7 @@ export class FeatureTool {
     const a0 = before ? [...sc.place.a] : null, flip0 = before ? sc.place.flip : false;
     const run = () => {
       change();
-      if (!before || this.model.isBad() || !sc.place) return;
+      if (!before || !sc.place) return;
       if (sc.place.mode !== this.model.geo.mode) sc.elements();        // a new geometry refits the image first
       const after = at();
       if (!after || !(before.k > 0) || !(after.k > 0)) return;
