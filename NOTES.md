@@ -59,6 +59,26 @@ is 0.0003 and the maximum 0.056 at brush edges. Paste it into the chat. To repro
 `await orbipix.applyState(<that JSON>)`, for example in `tools/browser-check.mjs`. The image itself
 is left out; describe it, or drop the file into the project folder.
 
+## Two kinds of mask (2026-11-23)
+
+Only one is in use at a time; the Mask radio chooses it (`settings.avg`):
+- **Height map** (`'height'`, the default). A height over the image, not contravariant. Each orbit
+  shows its highest copies, with heights within 0.004 averaged (patent claim 3, "the average of the
+  colour values with the greatest weights"). It starts flat (`maskMode 'domain'` = level 0.5, no
+  texture needed), so every copy is averaged; this replaces the old "No mask: average all".
+  Brushing raises or lowers it, with no counterbalancing (`MaskGPU` brush with `uContra = 0`).
+  **It stays attached to the image**: it survives signature changes and moves with the image. A new
+  picture starts flat.
+- **Contravariant** (`'mean'`). Weighted average; starts as the feathered domain; contravariant
+  brushing. **It resets to the domain when the signature changes** (`Scene.symmetryChanged`), but not
+  on shape drags. Feather is shown only for this kind.
+- **No mask: first hit** (`'first'`) is kept as a third choice. Brushing does nothing in that mode.
+- Switching between height and contravariant starts the new kind afresh. Undo restores the mask and
+  the kind (the history entries carry `avg`). The kind travels in shared states too.
+- Cost: a flat or brushed height map visits every copy (no culling by weight), so domain-texture
+  recomputes run at "average all" cost: 27 ms on `*2223` and up to 137 ms on `456` with the image
+  over the disk. Redraws are unaffected.
+
 ## Decisions
 
 - Undo covers the signature, parameters, comma, image placement and mask (each history entry keeps a

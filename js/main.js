@@ -27,9 +27,9 @@ const undo = [], redo = [];
 let maskSnap = null, maskSnapVer = -1;
 const snapMask = () => { if (maskSnapVer !== scene.maskVersion) { maskSnap = scene.maskSnapshot(); maskSnapVer = scene.maskVersion; } return maskSnap; };
 const snap = () => ({ sig: model.getSignature(), params: model.bad ? (undo[undo.length - 1]?.params || {}) : model.params.snapshot(), motif: model.bad ? null : model.motif,
-  place: scene.place ? { ...scene.place } : null, mask: snapMask() });
+  place: scene.place ? { ...scene.place } : null, mask: snapMask(), avg: scene.settings.avg });
 const same = (a, b) => a && b && a.sig === b.sig && JSON.stringify(a.params) === JSON.stringify(b.params) && JSON.stringify(a.motif) === JSON.stringify(b.motif)
-  && JSON.stringify(a.place) === JSON.stringify(b.place) && a.mask === b.mask;
+  && JSON.stringify(a.place) === JSON.stringify(b.place) && a.mask === b.mask && a.avg === b.avg;
 const UNDO_MAX = 60;
 function commit() {
   const s = snap();
@@ -41,6 +41,7 @@ function restore(s) {
   applySignature(s.sig, { params: s.params, motif: s.motif, history: false });
   editor.set(s.sig);
   if (s.place) scene.setPlace(s.place);
+  if (s.avg && s.avg !== scene.settings.avg) { scene.settings.avg = s.avg; syncSettingsUI(); }
   if (s.mask !== snapMask()) { scene.restoreMask(s.mask); maskSnap = s.mask; maskSnapVer = scene.maskVersion; }
 }
 function updateUndoButtons() { $('#undo').disabled = undo.length < 2; $('#redo').disabled = redo.length === 0; }
@@ -87,6 +88,7 @@ function readHash() {
 function applySignature(text, { params, motif = null, history: hist = true, resetView = false } = {}) {
   const prevMode = model.geo?.mode;
   if (text !== model.getSignature() || !motif) tool?.select(false);
+  if (text !== model.getSignature()) scene.symmetryChanged();
   model.setSignature(text, { params, motif });
   if (!model.bad && (resetView || model.geo.mode !== prevMode)) view.resetView();
   if (hist) commit();
@@ -250,22 +252,23 @@ function bindSlider(id, key, fmt, after) {
 }
 function setBrush(px) { S.brush = Math.min(240, Math.max(4, px)); $('#brush').value = S.brush; $('#brush-v').textContent = Math.round(S.brush) + ' px'; }
 bindSlider('feather', 'feather', v => v.toFixed(2), () => { if (scene.maskMode === 'domain') view.requestRender(); });
+renderMaskState();
 bindSlider('brush', 'brush', v => Math.round(v) + ' px');
 bindSlider('strength', 'strength', v => Math.round(v * 100) + '%');
-document.querySelectorAll('input[name=avg]').forEach(r => r.addEventListener('change', () => { S.avg = r.value; renderMaskState(); view.requestRender(); }));
+document.querySelectorAll('input[name=avg]').forEach(r => r.addEventListener('change', () => { scene.setAveraging(r.value); renderMaskState(); commit(); }));
 $('#guides').addEventListener('change', e => { S.guides = e.target.checked; view.requestRender(); });
 $('#comma').addEventListener('change', e => { S.showComma = e.target.checked; view.requestRender(); });
 $('#mask-reset').onclick = () => { scene.resetMask(); commit(); };
-$('#mask-flat').onclick = () => { scene.fillUniform(); commit(); };
 $('#fit').onclick = () => { scene.fit(); commit(); };
 $('#flip').onclick = () => { scene.flip(); commit(); };
 
 function renderMaskState() {
-  $('#mask-state').textContent = ['all', 'first'].includes(S.avg)
-    ? 'Not used now: ' + (S.avg === 'all' ? 'every copy of the image in an orbit counts equally.' : 'each orbit takes the first copy of the image it meets.')
-    : scene.maskMode === 'domain'
-      ? 'The fundamental domain, feathered. Brush to start shaping it.'
-      : 'Your mask: brushed or loaded. Feather applies only to the domain mask.';
+  const custom = scene.maskMode === 'custom';
+  $('#mask-state').textContent =
+    S.avg === 'first' ? 'No mask: each orbit takes the first copy that lands on the image.'
+      : S.avg === 'height' ? (custom ? 'Your height map. It stays with the image when the symmetry changes.' : 'Flat: every copy stands level, so each orbit averages them all. Brush to raise parts (Erase lowers).')
+        : (custom ? 'Your contravariant mask. It goes back to the domain when the signature changes.' : 'The fundamental domain, feathered. Brush to start shaping it.');
+  $('#feather-row').hidden = S.avg !== 'mean';
 }
 function renderStats() {
   const e = scene.elements();
@@ -414,6 +417,7 @@ async function applyState(st) {
   editor.set(model.getSignature());
   if (st.place) scene.setPlace({ ...st.place, mode: model.geo.mode });
   Object.assign(scene.settings, st.settings || {});
+  if (st.settings?.avg) scene.maskKind = Scene.kindOf(st.settings.avg);
   syncSettingsUI();
   if (st.view && st.view.mode === model.geo.mode) Object.assign(view.view, st.view);
   setMode(st.mode === 'adjust' ? 'adjust' : 'pattern');

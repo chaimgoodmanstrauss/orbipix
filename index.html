@@ -68,20 +68,18 @@
       </div>
 
       <h3>Mask</h3>
+      <div class="row radios" role="radiogroup" aria-label="the kind of mask">
+        <label title="a height over the image: each orbit shows its highest copies (level ones averaged); stays with the image"><input type="radio" name="avg" value="height" checked> Height map</label>
+        <label title="weights summing to one over each orbit; starts as the fundamental domain; resets when the symmetry changes"><input type="radio" name="avg" value="mean"> Contravariant</label>
+        <label title="no mask: each orbit takes the first copy that lands on the image"><input type="radio" name="avg" value="first"> No mask: first hit</label>
+      </div>
       <p class="small" id="mask-state"></p>
-      <label class="slider">Feather <input type="range" id="feather" min="0" max="1.5" step="0.01"><output id="feather-v"></output></label>
+      <label class="slider" id="feather-row">Feather <input type="range" id="feather" min="0" max="1.5" step="0.01"><output id="feather-v"></output></label>
       <label class="slider">Brush size <input type="range" id="brush" min="4" max="240" step="1"><output id="brush-v"></output></label>
       <label class="slider">Brush strength <input type="range" id="strength" min="0.02" max="1" step="0.01"><output id="strength-v"></output></label>
       <div class="row">
-        <button class="btn" id="mask-reset" title="back to the feathered fundamental domain">Domain mask</button>
-        <button class="btn" id="mask-flat" title="every point of each orbit weighs the same">Uniform</button>
-        <label class="btn" title="a grayscale image read as weights (a height map)">Load mask…<input type="file" id="mask-file" accept="image/*" hidden></label>
-      </div>
-      <div class="row radios" role="radiogroup" aria-label="how an orbit's colours combine">
-        <label><input type="radio" name="avg" value="mean" checked> Weighted average</label>
-        <label><input type="radio" name="avg" value="height"> Highest weight wins</label>
-        <label><input type="radio" name="avg" value="all"> No mask: average all</label>
-        <label><input type="radio" name="avg" value="first"> No mask: first hit</label>
+        <button class="btn" id="mask-reset" title="back to this kind's starting mask">Reset mask</button>
+        <label class="btn" title="a grayscale image read as the mask">Load mask…<input type="file" id="mask-file" accept="image/*" hidden></label>
       </div>
       <div class="row radios">
         <label><input type="checkbox" id="guides" checked> Show tile edges</label>
@@ -105,9 +103,10 @@
     <details class="fold" open>
       <summary>How it works</summary>
       <p>A symmetry splits the plane into <b>orbits</b>: sets of points that must share one colour. Orbipix colours each orbit of the pattern with a <b>weighted average</b> of the image over the same orbit, with weights from a <b>mask</b>.</p>
-      <p>The starting mask is the fundamental domain: weight 1 inside, 0 outside, so you get the usual tiling. <b>Feather</b> softens its edges, so neighbouring copies blend instead of meeting at a seam.</p>
+      <p>There are two kinds of mask. A <b>height map</b> (the default) stands over the image: each orbit shows its highest copies, and level ones are averaged, so the flat start averages every copy. Brushing raises or lowers it, and it stays with the image when the symmetry changes.</p>
+      <p>A <b>contravariant</b> mask starts as the fundamental domain: weight 1 inside, 0 outside, so you get the usual tiling. <b>Feather</b> softens its edges, so neighbouring copies blend instead of meeting at a seam.</p>
       <p>The mask is <b>contravariant</b>: the weights over each orbit add up to one. <b>Adjust image</b> lays the image over the pattern where it lies, faint where its weight is low. There, <b>Brush</b> raises the weight under it and lowers the rest of each orbit to match, pulling that part of the image into the pattern, wherever it is, in as many pieces as you like. <b>Erase</b> does the opposite.</p>
-      <p>With <b>Highest weight wins</b>, the mask reads as a height: the pattern becomes a collage of overlapping copies.</p>
+      <p>It is redrawn from the domain whenever the signature changes.</p>
     </details>
     <details class="fold">
       <summary>The signature</summary>

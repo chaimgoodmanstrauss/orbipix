@@ -42,6 +42,7 @@ uniform sampler2D uOld;
 uniform vec4 uDabs[${MAX_DABS}];   // centre (mask px), radius (mask px), strength
 uniform int uNDab;
 uniform float uSign;
+uniform int uContra;               // 0: a height map — just raise or lower what is under the brush
 uniform vec4 uBox;                 // bounding box of the dabs, mask px
 float B(vec2 x){
   if (x.x < uBox.x || x.y < uBox.y || x.x > uBox.z || x.y > uBox.w) return 0.;
@@ -68,6 +69,7 @@ void main(){
   float by = B(y);
   if (by > 0.) { outColor = vec4(after(old, by), 0., 0., 1.); return; }
   outColor = vec4(old, 0., 0., 1.);
+  if (uContra == 0) return;
   vec2 p; vec3 P;
   if (!worldOfPx(y, p, P) || !foldP(p, P)) return;
   for (int e = 0; e < 4096; e++) {
@@ -324,7 +326,7 @@ export class MaskGPU {
   }
 
   // dabs: [{ x, y, r, s }] in mask pixels; sign ±1. One pass.
-  brush(scene, dabs, sign) {
+  brush(scene, dabs, sign, contra = true) {
     if (!dabs.length || !this.view.prepare()) return false;
     const gl = this.gl, P = this.progs.brush;
     gl.useProgram(P.p);
@@ -337,6 +339,7 @@ export class MaskGPU {
       gl.uniform4fv(P.u.uDabs, arr);
       gl.uniform1i(P.u.uNDab, part.length);
       gl.uniform1f(P.u.uSign, sign);
+      gl.uniform1i(P.u.uContra, contra ? 1 : 0);
       gl.uniform4f(P.u.uBox, x0, y0, x1, y1);
       gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, this.tex[this.cur]); gl.uniform1i(P.u.uOld, 2);
       this._draw(1 - this.cur);

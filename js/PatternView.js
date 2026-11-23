@@ -130,44 +130,52 @@ float maskAt(vec2 uv){
   return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 // the orbit of the folded point (p, P): its colour, alpha 0 when no copy lands on the image.
-// pxw: folded world units per output pixel (for the image's mip level)
+// pxw: folded world units per output pixel (for the image's mip level).
+// uAvg 0: contravariant mask, the weighted average (claim 1)
+//      1: height map, the average of the copies standing highest (claim 3; all level = average all)
+//      3: no mask, the first copy in the crown that lands on the opaque image
+const float HEPS = 0.004;     // heights this close count as level
 vec4 orbitColor(vec2 p, vec3 P, float pxw){
-    float sw = 0., cnt = 0., best = -1., suma = 0.;
-    vec3 swc = vec3(0.), sumc = vec3(0.), bestc = vec3(0.);
-    bool noMask = uAvg >= 2;
-    int nLoop = noMask || uMaskMode == 1 ? uNG : uNNear;
-    for (int e = 0; e < 4096; e++) {
-      if (e >= nLoop) break;
-      bool near = e < uNNear;                 // near copies also feed the no-weight fallback
-      if (uMaskMode == 1 && !near && !noMask) {
-        if (texelFetch(uActive, ivec2(e >> 4, 1), 0).r < 0.5) { e = e | 15; continue; }   // a block of 16 with no weight
-        if (texelFetch(uActive, ivec2(e, 0), 0).r < 0.5) continue;
-      }
-      vec4 t3 = E(3, e);
-      vec2 q; vec3 Q; float gd;
-      applyEl(e, p, P, q, Q, gd);
-      vec2 uv = uvOf(planeOf(q, Q));
-      if (!inImg(uv)) continue;
-      if (noMask) {
-        vec4 c = textureLod(uImg, uv, log2(max(gd * planeD(Q) * uTexPer * pxw, 1.)));
-        if (uAvg == 3 && c.a > 0.5) return vec4(c.rgb, 1.);     // the first copy in the crown that lands on the (opaque) image
-        sumc += c.a * c.rgb; suma += c.a; cnt += 1.;
-        continue;
-      }
-      float w = uMaskMode == 1 ? maskAt(uv) : (t3.y > 0.5 ? wdom(q, Q) : 0.);
-      if (w <= 0. && !near) continue;
-      float lod = log2(max(gd * planeD(Q) * uTexPer * pxw, 1.));
-      vec4 c = textureLod(uImg, uv, lod);
-      w *= c.a;                                  // transparent parts (and a white background) carry no weight
-      sw += w; swc += w * c.rgb; cnt += 1.; sumc += c.a * c.rgb; suma += c.a;
-      if (w > best) { best = w; bestc = c.rgb; }
+  float sw = 0., cnt = 0., suma = 0., best = -1e9, nb = 0.;
+  vec3 swc = vec3(0.), sumc = vec3(0.), bestc = vec3(0.);
+  bool contra = uAvg == 0;
+  int nLoop = !contra || uMaskMode == 1 ? uNG : uNNear;
+  for (int e = 0; e < 4096; e++) {
+    if (e >= nLoop) break;
+    bool near = e < uNNear;                 // near copies also feed the no-weight fallback
+    if (contra && uMaskMode == 1 && !near) {
+      if (texelFetch(uActive, ivec2(e >> 4, 1), 0).r < 0.5) { e = e | 15; continue; }   // a block of 16 with no weight
+      if (texelFetch(uActive, ivec2(e, 0), 0).r < 0.5) continue;
     }
-    if (cnt == 0.) return vec4(0.);
-    // an orbit with no weight: the plain average of its opaque parts; all transparent: white
-    vec3 plain = suma > 1e-4 ? sumc / suma : vec3(1.);
-    if (noMask) return vec4(plain, 1.);
-    if (uAvg == 1) return vec4(best > 1e-4 ? bestc : plain, 1.);
-    return vec4(sw > 1e-4 ? swc / sw : plain, 1.);
+    vec4 t3 = E(3, e);
+    vec2 q; vec3 Q; float gd;
+    applyEl(e, p, P, q, Q, gd);
+    vec2 uv = uvOf(planeOf(q, Q));
+    if (!inImg(uv)) continue;
+    float w = 0.;
+    if (contra) {
+      w = uMaskMode == 1 ? maskAt(uv) : (t3.y > 0.5 ? wdom(q, Q) : 0.);
+      if (w <= 0. && !near) continue;
+    }
+    vec4 c = textureLod(uImg, uv, log2(max(gd * planeD(Q) * uTexPer * pxw, 1.)));
+    if (uAvg == 3) { if (c.a > 0.5) return vec4(c.rgb, 1.); continue; }
+    cnt += 1.; sumc += c.a * c.rgb; suma += c.a;
+    if (uAvg == 1) {
+      if (c.a < 0.5) continue;                 // transparent parts stand nowhere
+      float h = uMaskMode == 1 ? maskAt(uv) : 0.5;
+      if (h > best + HEPS) { best = h; bestc = c.rgb; nb = 1.; }
+      else if (h > best - HEPS) { bestc += c.rgb; nb += 1.; }
+      continue;
+    }
+    w *= c.a;                                  // transparent parts (and a white background) carry no weight
+    sw += w; swc += w * c.rgb;
+  }
+  if (cnt == 0.) return vec4(0.);
+  // nothing to go by: the plain average of the opaque parts; all transparent: white
+  vec3 plain = suma > 1e-4 ? sumc / suma : vec3(1.);
+  if (uAvg == 1) return vec4(nb > 0. ? bestc / nb : plain, 1.);
+  if (uAvg == 3) return vec4(plain, 1.);
+  return vec4(sw > 1e-4 ? swc / sw : plain, 1.);
 }
 
 // the domain texture's chart of F: the world itself in 2D, stereographic about the comma on the sphere
@@ -298,7 +306,7 @@ void main(){
     if (inImg(uv)) {
       float pxr = sph ? 1. / uS : J / uS;
       vec4 c = textureLod(uImg, uv, log2(max(planeD(P0) * uTexPer * pxr, 1.)));
-      float w = uAvg >= 2 ? 1. : uMaskMode == 1 ? maskAt(uv) : wdom(p0, P0);
+      float w = uAvg == 3 ? 1. : uMaskMode == 1 ? maskAt(uv) : wdom(p0, P0);
       col = mix(col, c.rgb, mix(0.3, 1., clamp(w, 0., 1.)) * c.a);
     }
   }
@@ -745,7 +753,7 @@ export class PatternView {
     set('uMode', '1i', mode); set('uNF', '1i', this._counts ? this._counts[0] : 0);
     set('uNG', '1i', has ? this._ng || 0 : 0); set('uNNear', '1i', has ? this._nnear || 0 : 0);
     set('uMaskMode', '1i', has && sc.maskMode === 'custom' ? 1 : 0);
-    set('uAvg', '1i', ({ mean: 0, height: 1, all: 2, first: 3 })[st.avg] || 0);
+    set('uAvg', '1i', ({ mean: 0, height: 1, first: 3 })[st.avg] ?? 1);
     if (!has) return;
     const pl = sc.place, L = Math.max(sc.img.w, sc.img.h), ch = this.chart;
     set('uFlip', '1i', pl.flip ? 1 : 0); set('uPlace', '4f', pl.c[0], pl.c[1], pl.a[0], pl.a[1]);
@@ -889,7 +897,7 @@ export class PatternView {
     const sc = this.scene, st = sc ? sc.settings : {};
     const has = !!(sc && sc.img && sc.place && g && !this.model.isBad());
     if (has) this._uploadScene();
-    const act = has && sc.maskMode === 'custom' && sc.gpu && !['all', 'first'].includes(st.avg) ? sc.gpu.activeTexture(sc, this._ng || 0, this._elVer) : null;
+    const act = has && sc.maskMode === 'custom' && sc.gpu && st.avg === 'mean' ? sc.gpu.activeTexture(sc, this._ng || 0, this._elVer) : null;
     // textures on fixed units for both programs
     const bind = (unit, t) => { gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, t); };
     bind(0, this.dataTex); bind(1, this.motifTex); bind(2, this.imgTex); bind(3, sc?.gpu?.texture() || null); bind(4, this.elTex); bind(5, act);

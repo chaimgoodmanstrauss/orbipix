@@ -157,3 +157,4 @@ button { font: inherit; color: inherit; }
 .chars dd { margin: 0; line-height: 1.4; }
 
 .drop[hidden] { display: none; }
+.slider[hidden] { display: none; }

@@ -2,16 +2,17 @@
 // world (its placement), the mask (a contravariant distribution over the
 // image), and the element list the shader averages over.
 //
-// Mask modes
-//   'domain'  the mask is the fundamental domain, feathered by `feather`; it is
-//             computed analytically (in the shader and here), so it follows the
-//             domain live while the group is reshaped.
-//   'custom'  a float weight per mask pixel, held on the GPU (MaskGPU.js). The
-//             first brush stroke bakes the domain mask into one. Brushing is
-//             contravariant (patent, "Masks"): raising the weight at a pixel lowers
-//             the rest of its orbit in proportion, so each orbit keeps summing to one.
-// Averaging ('mean' | 'height'): weighted mean over the orbit, or the colour
-// of the orbit point with the greatest weight (the mask read as a height).
+// Two kinds of mask, one at a time (settings.avg chooses):
+//   height ('height', the default; also used by 'first')  a height over the image, not
+//             contravariant: each orbit shows the copies standing highest (level ones
+//             averaged), so it starts flat = every copy averaged. Brushing raises or lowers
+//             it. It belongs to the image: it stays when the symmetry changes.
+//   contravariant ('mean')  weights summing to one over each orbit; the colour is their
+//             weighted average. It starts as the feathered fundamental domain, brushing is
+//             contravariant (patent, "Masks"), and it goes back to the domain whenever the
+//             signature changes.
+// maskMode 'domain' = the kind's starting mask, drawn analytically (flat height / feathered
+// domain, which follows the domain live); 'custom' = a float texture on the GPU (MaskGPU.js).
 
 import { enumerate, planeOfWorld, featherUnit } from './Orbits.js';
 import { C } from './geom.js';
@@ -24,9 +25,10 @@ export class Scene {
     this.img = null;          // { el, w, h, video, version }
     this.place = null;        // { c, a, flip, pole }
     this.maskMode = 'domain';
+    this.maskKind = 'height';  // the kind the current mask belongs to
     this.gpu = null;          // MaskGPU, set by main.js once the views exist
     this.maskVersion = 0;
-    this.settings = { feather: 0.35, avg: 'mean', guides: true, showComma: false, brush: 36, strength: 0.35 };
+    this.settings = { feather: 0.35, avg: 'height', guides: true, showComma: false, brush: 36, strength: 0.35 };
     this._ls = [];
     this._els = null; this._elsKey = '';
     this.elVersion = 0;
@@ -53,7 +55,8 @@ export class Scene {
     }
     const prevAspect = this.img ? this.img.w / this.img.h : null;
     this.img = { el, pixels, w, h, video, whiteBackground, version: (this.img?.version || 0) + 1 };
-    if (this.maskMode === 'custom') {
+    if (!video) this.resetMask(true);          // a new picture starts with a fresh mask
+    else if (this.maskMode === 'custom') {
       const [mw, mh] = this.maskDims();
       if (prevAspect !== w / h || mw !== this.gpu?.w || mh !== this.gpu?.h) this.resetMask(true);
     }
@@ -115,18 +118,27 @@ export class Scene {
 
   // ── mask ───────────────────────────────────────────────────────────────
   _bump() { this.maskVersion++; this.emit('mask'); }
+  static kindOf(avg) { return avg === 'mean' ? 'contra' : 'height'; }
+  // back to the starting mask of the current kind
   resetMask(silent) { this.maskMode = 'domain'; this.maskVersion++; if (!silent) this.emit('mask'); }
-  // the domain mask becomes an editable one
+  // choose how orbits are coloured; switching between the two kinds starts that kind afresh
+  setAveraging(avg) {
+    this.settings.avg = avg;
+    const k = Scene.kindOf(avg);
+    if (k !== this.maskKind) { this.maskKind = k; this.resetMask(true); }
+    this._bump();
+  }
+  // the signature changed: a contravariant mask was made for the old orbits, so it starts over;
+  // a height map stays with the image
+  symmetryChanged() { if (this.maskKind === 'contra' && this.maskMode === 'custom') this.resetMask(true); }
+  // the starting mask becomes an editable texture
   ensureCustom() {
     if (this.maskMode === 'custom') return true;
-    if (!this.gpu || !this.gpu.bake(this)) return false;
+    if (!this.gpu) return false;
+    if (this.maskKind === 'contra') { if (!this.gpu.bake(this)) return false; }
+    else { const [w, h] = this.maskDims(); if (!this.gpu.ensure(w, h)) return false; this.gpu.fill(0.5); }
     this.maskMode = 'custom';
     return true;
-  }
-  fillUniform() {
-    const [w, h] = this.maskDims();
-    if (!this.gpu?.ensure(w, h)) return;
-    this.gpu.fill(0.5); this.maskMode = 'custom'; this._bump();
   }
   // a grayscale image read as weights (claim 3: a height function)
   maskFromImage(src) {
@@ -139,8 +151,9 @@ export class Scene {
     this.maskMode = 'custom'; this._bump();
   }
   // for undo: a CPU copy (read back once per committed change)
-  maskSnapshot() { return this.maskMode === 'custom' && this.gpu?.w ? { mode: 'custom', w: this.gpu.w, h: this.gpu.h, data: this.gpu.read() } : { mode: 'domain' }; }
+  maskSnapshot() { return this.maskMode === 'custom' && this.gpu?.w ? { mode: 'custom', kind: this.maskKind, w: this.gpu.w, h: this.gpu.h, data: this.gpu.read() } : { mode: 'domain', kind: this.maskKind }; }
   restoreMask(s) {
+    if (s?.kind) this.maskKind = s.kind;
     if (!s || s.mode === 'domain') { this.resetMask(); return; }
     const [w, h] = this.maskDims();
     if (s.w !== w || s.h !== h || !this.gpu?.upload(s.data, w, h)) { this.resetMask(); return; }
@@ -150,9 +163,10 @@ export class Scene {
   // Brush dabs [{ uv, R (mask px), s (strength) }], sign +1 (bring forward) or −1
   // (push back): one GPU pass for the lot (MaskGPU.brush).
   dabs(list, sign) {
+    if (this.settings.avg === 'first') return;            // no mask in that mode
     if (!list.length || !this.model.geo || !this.img || !this.ensureCustom()) return;
     this.elements();
-    this.gpu.brush(this, list.map(d => ({ x: d.uv[0] * this.gpu.w, y: d.uv[1] * this.gpu.h, r: d.R, s: d.s })), sign);
+    this.gpu.brush(this, list.map(d => ({ x: d.uv[0] * this.gpu.w, y: d.uv[1] * this.gpu.h, r: d.R, s: d.s })), sign, this.maskKind === 'contra');
     this._bump();
   }
 }
