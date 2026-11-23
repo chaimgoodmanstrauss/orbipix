@@ -13,7 +13,7 @@ import { dist2, dot3, hypLerp, hypDist, Mob, C } from './geom.js';
 import { unreduce } from './OrbifoldModel.js';
 import { motifHit, applyWord, carry } from './Motif.js';
 import { M3 } from './geom.js';
-import { planeOfWorld, planeOfUV, uvOfPlane, inUV, toImageFrame } from './Orbits.js';
+import { planeOfWorld, planeOfUV, uvOfPlane, inUV, toImageFrame, compose, identity } from './Orbits.js';
 
 const isLen = n => n.endsWith('_l') || n === 'lattice_b', isTwist = n => n.endsWith('_t') || n === 'lattice_c';
 const HIT_EDGE = 7, HIT_POINT = 10, HIT_HANDLE = 12, ALT_SLOP = 6, ADD_CLEAR = 24;
@@ -427,28 +427,48 @@ export class FeatureTool {
     this._setHover(this.hitTest(x, y), x, y);
   }
 
-  // Run change() (a signature change, maybe moving the view), then move and scale the image so the
-  // spot of the image that was under (x, y) is under it again, at the same size on screen.
+  // Run change() (a signature change, maybe moving the view), keeping the image where it was on screen.
   // The whole thing is one undo step.
+  // - Same geometry: the view moved by an isometry of the world (placeAt, recentring), so the image
+  //   frame gets the same isometry: iso ← V_after⁻¹ ∘ V_before ∘ iso. Exact and rigid in the
+  //   geometry's own metric; the whole image stays put on screen, whether or not the click was on it.
+  // - New geometry (sphere ↔ plane ↔ disk): the image is refitted, then, only if the click was on the
+  //   image, scaled and slid so that spot is under the pointer again at the same size on screen.
+  // - Either way, an image left touching no copy of the domain is refitted.
   _withImagePinned(x, y, change) {
-    const sc = this.scene;
+    const sc = this.scene, vw = this.view.view;
     const at = () => {                         // image-plane point under (x, y), and plane units per css px
       const z = this._plane(x, y), z1 = this._plane(x + 1, y);
       return z && z1 ? { z, k: Math.hypot(z1[0] - z[0], z1[1] - z[1]) } : null;
     };
+    const mode0 = this.model.geo?.mode;
+    const V0 = vw.V ? vw.V.map(c => [...c]) : null, R0 = vw.R ? [...vw.R] : null;
     const before = sc?.img && sc.place ? at() : null;
     const uv = before ? uvOfPlane(sc.place, sc.img, before.z) : null;
     const a0 = before ? [...sc.place.a] : null, flip0 = before ? sc.place.flip : false;
     const run = () => {
       change();
-      if (!before || !sc.place) return;
-      if (sc.place.mode !== this.model.geo.mode) sc.elements();        // a new geometry refits the image first
-      const after = at();
-      if (!after || !(before.k > 0) || !(after.k > 0)) return;
-      // same turn and flip as before, sized so the spot looks the same size; then slid into place
-      sc.setPlace({ a: [a0[0] * after.k / before.k, a0[1] * after.k / before.k], flip: flip0 }, { silent: true });
-      const was = planeOfUV(sc.place, sc.img, uv);
-      sc.movePlace([after.z[0] - was[0], after.z[1] - was[1]]);
+      const g = this.model.geo;
+      if (!sc.place || !g) return;
+      if (g.mode === mode0 && sc.place.mode === g.mode) {
+        let E = null;
+        if (g.mode === 'sph') { if (R0) E = { R: M3.mul(M3.transpose(vw.R), R0) }; }
+        else if (V0) E = { M: Mob.normalize(Mob.mul(Mob.inv(vw.V), V0)), conj: false };
+        if (E) {
+          const iso = compose(g.mode, E, sc.place.iso || identity(g.mode));
+          sc.setPlace({ iso: g.mode === 'sph' ? { R: iso.R } : { M: iso.M, conj: iso.conj } }, { silent: true });
+        }
+      } else {
+        if (sc.place.mode !== g.mode) sc.elements();                    // a new geometry refits the image first
+        const after = at();
+        if (before && inUV(uv) && after && before.k > 0 && after.k > 0) {
+          // same turn and flip as before, sized so the spot looks the same size; then slid into place
+          sc.setPlace({ a: [a0[0] * after.k / before.k, a0[1] * after.k / before.k], flip: flip0 }, { silent: true });
+          const was = planeOfUV(sc.place, sc.img, uv);
+          sc.movePlace([after.z[0] - was[0], after.z[1] - was[1]]);
+        }
+      }
+      if (sc.img && !sc.elements().list.length) sc.fit();
     };
     if (this.batch) this.batch(run); else run();
   }

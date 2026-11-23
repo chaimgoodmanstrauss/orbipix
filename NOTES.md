@@ -112,13 +112,16 @@ hyperbolic), then alt-click back to `273`; the point stays within 0.32 px of the
   removes it. Checked: `*2223` → `2*2223` (new cone 0.00 px from the click) → `3*2223` →
   `2*2223` → `*2223`, and `344` → `2344`. An alt-click on the 2-corner of `*2223` gives `*223`
   (sphere).
-- **The image is pinned under the pointer** when a cone is added or removed
-  (`FeatureTool._withImagePinned`). The image point under the click stays under it at the same size
-  on screen, with the same turn and flip, even across a change of geometry (the refit is overridden).
-  The signature change and the image move are one undo step (`batch` in `main.js` holds `commit`).
-  Checked: `344` ⇄ `2344`, and `3*2` (sphere) → `23*2` (hyperbolic). The image coordinate under the
-  pointer and the image pixels per screen pixel are unchanged to 4 digits. Order changes (click / wheel
-  on a point) do not do this yet.
+- **The image stays put on screen** when a cone is added or removed (`FeatureTool._withImagePinned`).
+  Same geometry: the view moves by a world isometry, and the image frame gets the same one
+  (iso ← V_after⁻¹ ∘ V_before ∘ iso), so the whole image is unchanged on screen and rigid in the
+  metric. New geometry: the image is refitted, then, only if the click was on the image, scaled and
+  slid so that spot is under the pointer at the same size. An image left touching no copy of the
+  domain is refitted. The signature change and the image move are one undo step (`batch` in `main.js`).
+  Fixed 2026-11-23: the old version always pinned the image point under the click, even off the image,
+  with Euclidean scale and slide in the disk; a few alt-clicks on open ground sent the image out of
+  the disk entirely (c ≈ (−1.9, −4.0), 0 copies). Checked: `344` → `2344` → `22344` → `222344`, image
+  corners unchanged to 0.1 px; `3*2` → `23*2`. Order changes (click / wheel on a point) do not do this yet.
 - Fitted image size: `FIT = 0.4` in `Scene.fit` (40% of the first version's size).
 - If the new signature is not a pattern (e.g. a lone `2`), it shows faded as usual and nothing moves.
 - An alt-click may wobble up to 6 px (`ALT_SLOP`) and still count as a click. The view does not move
