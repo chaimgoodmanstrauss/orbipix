@@ -12,7 +12,7 @@
 //          union of the dabs, 1 − Π(1 − b_i).
 // Two R32F textures take turns as source and target (a pass cannot read what it writes).
 
-import { COMMON } from './PatternView.js';
+import { COMMON, isoUniforms } from './PatternView.js';
 
 export const MAX_DABS = 48;
 
@@ -26,8 +26,9 @@ out vec4 outColor;
 bool worldOfPx(vec2 y, out vec2 p, out vec3 P){
   vec2 z = planeOfUV(y / uMS);
   p = z; P = vec3(0.);
-  if (uMode == 2) { P = sphOfPlane(z); return true; }
-  return !(uMode == 0 && dot(z, z) >= 0.9999);
+  if (uMode == 2) { P = sphOfPlane(z); fromFrame(p, P); return true; }
+  fromFrame(p, P);
+  return !(uMode == 0 && dot(p, p) >= 0.9999);
 }
 `;
 
@@ -76,6 +77,7 @@ void main(){
     if (e >= uNG) break;
     vec2 q; vec3 Q; float gd;
     applyEl(e, p, P, q, Q, gd);
+    float fd; toFrame(q, Q, fd);
     vec2 x = uvOf(planeOf(q, Q)) * uMS;
     float bx = B(x);
     if (bx <= 0. || distance(x, y) < 0.5) continue;
@@ -272,6 +274,11 @@ export class MaskGPU {
     if (u.uNG) gl.uniform1i(u.uNG, v._ng || 0);
     gl.uniform1i(u.uFlip, pl.flip ? 1 : 0);
     gl.uniform4f(u.uPlace, pl.c[0], pl.c[1], pl.a[0], pl.a[1]);
+    const iso = isoUniforms(g.mode, pl.iso);
+    if (u.uIsoI0) { gl.uniform4f(u.uIsoI0, ...iso.i0); gl.uniform4f(u.uIsoI1, ...iso.i1); }
+    if (u.uIsoF0) { gl.uniform4f(u.uIsoF0, ...iso.f0); gl.uniform4f(u.uIsoF1, ...iso.f1); }
+    if (u.uIsoConj) gl.uniform1i(u.uIsoConj, iso.conj);
+    if (u.uIsoRT) gl.uniformMatrix3fv(u.uIsoRT, false, new Float32Array(iso.R));
     gl.uniform2f(u.uK, L / img.w, L / img.h);
     gl.uniform1f(u.uPole, pl.pole || 1);
     if (u.uFeather) gl.uniform1f(u.uFeather, scene.featherRadius());

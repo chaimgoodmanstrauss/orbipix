@@ -168,6 +168,34 @@ its image placement and view**: `Scene._placeByMode` and `viewByMode` in `main.j
 geometry restores them instead of refitting or resetting. Checked: typing `*2223` → `*2` (bad) →
 `*2223` keeps both. Loading by URL hash still resets the view.
 
+## Keeping the image (and the view) near the middle (2026-11-23)
+
+- **The placement carries an isometry** (`place.iso`: 2D `{M, conj}`, sphere `{R}`), and world =
+  iso(image frame). JS goes through `Orbits.uvOfWorld` / `worldOfUV`; shaders through
+  `toFrame` / `fromFrame` (uniforms `uIsoI*`, `uIsoF*`, `uIsoConj`, `uIsoRT`). The URL carries it as
+  `i=` (2D: conj, a, b, c, d) or `r=` (sphere: R).
+- **`recenterAll`** (`main.js`) runs on every pan step and when a Move-tool drag ends:
+  1. **View:** if the canvas centre has left F, change world coordinates by the orientation-preserving
+     group element bringing it back (V ← V∘W), and give the image W⁻¹. Nothing on screen moves, and
+     long pans never drift to the hyperbolic rim. The `(63)223` state Chaim sent had its canvas
+     centre at |x| = 0.9998, where the pattern came out speckled.
+  2. **Image** (`Scene.recenter`): among the copies of the image (from the crown), the one that best
+     covers the canvas centre becomes the placed copy (iso ← g∘iso). There is a 0.02 hysteresis, and a
+     domain-shaped contravariant mask is baked first, since it belongs to F, not to the image.
+  Both steps use group elements, so the pattern is the same up to precision. On `(63)223` the
+  speckled rim rendering became clean, with the same layout, and Adjust mode shows the image at the
+  centre.
+- During a Move-tool drag the image follows the pointer; it is re-centred only on release.
+
+## Twist slides ignore cones (2026-11-23)
+
+On `2222` (and any edge with parameters) a cone on the edge used to win the hit test, so a drag that
+started there panned. Now a shift-press there starts the twist slide on the edge
+(`FeatureTool._paramEdgeAt`), and a plain drag that starts on such a cone becomes the edge's length
+drag. A plain click still changes the cone's order. Mid-drag nothing is hit-tested, so passing over
+cones never interrupts. Checked on `2222`: a shift-drag from a cone moved c from 0.15 to 0.31; a plain
+drag from a cone moved b from 0.70 to 0.82; the signature was unchanged.
+
 ## Decisions
 
 - Undo covers the signature, parameters, comma, image placement and mask (each history entry keeps a

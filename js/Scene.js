@@ -14,7 +14,7 @@
 // maskMode 'domain' = the kind's starting mask, drawn analytically (flat height / feathered
 // domain, which follows the domain live); 'custom' = a float texture on the GPU (MaskGPU.js).
 
-import { enumerate, planeOfWorld, featherUnit } from './Orbits.js';
+import { enumerate, planeOfWorld, featherUnit, faceGenerators, elementOfWord, applyE, compose, invertE, uvOfWorld } from './Orbits.js';
 import { C } from './geom.js';
 
 const MAX_IMG = 2048, MAX_MASK = 1024;
@@ -92,6 +92,35 @@ export class Scene {
     this._invalidate();
     this.emit('place');
   }
+  // Pull the image back to the canvas: of all the copies of the image (the image moved by the group),
+  // take the one that best covers world point x0 (the canvas centre) — x0 deepest inside it — and
+  // make it the placed copy by composing the placement's isometry with that group element. The
+  // pattern does not change (the mask moves with the image; a domain-shaped contravariant mask is
+  // baked first, since it belongs to the domain, not the image). Returns whether it moved.
+  recenter(x0) {
+    const g = this.model.geo, pl = this.place;
+    if (!g || !this.img || !pl || !x0 || !g.faces.length || pl.mode !== g.mode) return false;
+    const mode = g.mode;
+    if (mode === 'hyp' && x0[0] * x0[0] + x0[1] * x0[1] >= 1 - 1e-9) return false;
+    const els = this.elements().list;
+    const r = g.reduce(x0);
+    if (!els.length || !r.ok) return false;
+    const depth = uv => Math.max(Math.abs(uv[0] - 0.5), Math.abs(uv[1] - 0.5));   // 0 at the centre, 0.5 at the edge
+    const cur = depth(uvOfWorld(mode, pl, this.img, x0));
+    let best = null;
+    for (const E of els) {
+      const d = depth(uvOfWorld(mode, pl, this.img, applyE(mode, E, r.p)));
+      if (!best || d < best.d) best = { d, E };
+    }
+    if (!best || best.d >= cur - 0.02) return false;          // a little hysteresis: no flicker between two copies
+    const W = elementOfWord(g, faceGenerators(g), r.word);
+    const gEl = compose(mode, W, invertE(mode, best.E));        // carries the image so that copy lands on x0
+    if (this.maskKind === 'contra' && this.maskMode === 'domain') this.ensureCustom();
+    const iso = pl.iso ? compose(mode, gEl, pl.iso) : gEl;
+    this.setPlace({ iso: mode === 'sph' ? { R: iso.R } : { M: iso.M, conj: iso.conj } });
+    return true;
+  }
+
   setPlace(p, { silent = false } = {}) { this.place = { ...this.place, ...p }; this._invalidate(); if (!silent) this.emit('place'); }
   // move / scale / turn about an image-plane point
   movePlace(dz) { this.setPlace({ c: C.add(this.place.c, dz) }); }

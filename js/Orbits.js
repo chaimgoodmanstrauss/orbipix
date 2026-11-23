@@ -45,6 +45,13 @@ export function planeOfUV(place, img, uv) {
   if (place.flip) s = [s[0], -s[1]];
   return C.add(place.c, C.mul(place.a, s));
 }
+// The placement may also carry an isometry `iso` of the world (a group element after re-centring,
+// see Scene.recenter): world = iso(image frame). 2D: an element { M, conj }; sphere: { R }.
+export function toImageFrame(mode, place, x) { return place.iso ? applyE(mode, invertE(mode, place.iso), x) : x; }
+export function fromImageFrame(mode, place, x) { return place.iso ? applyE(mode, place.iso, x) : x; }
+export function uvOfWorld(mode, place, img, x) { return uvOfPlane(place, img, planeOfWorld(mode, toImageFrame(mode, place, x), place.pole || 1)); }
+export function worldOfUV(mode, place, img, uv) { return fromImageFrame(mode, place, worldOfPlane(mode, planeOfUV(place, img, uv), place.pole || 1)); }
+
 const inUV = uv => uv[0] >= 0 && uv[0] <= 1 && uv[1] >= 0 && uv[1] <= 1;
 
 // ── elements ───────────────────────────────────────────────────────────────
@@ -169,9 +176,12 @@ export function enumerate(geo, place, img, { max = MAX_COPIES, feather = 0 } = {
   const pole = place.pole || 1;
 
   // image footprint in the image plane (bbox of its corners)
-  const corners = [[0, 0], [1, 0], [1, 1], [0, 1]].map(uv => planeOfUV(place, img, uv));
-  const ib = bbox(corners);
-  const texel = 2 * C.abs(place.a) / Math.max(img.w, img.h);         // plane units per image pixel
+  // image footprint in the world (its rim sampled: under an isometry its edges may curve)
+  const rim = [];
+  for (let i = 0; i < 16; i++) { const t = i / 16; rim.push([t, 0], [1, t], [1 - t, 1], [0, 1 - t]); }
+  const ib = sph ? null : bbox(rim.map(uv => worldOfUV(mode, place, img, uv)));
+  let texel = 2 * C.abs(place.a) / Math.max(img.w, img.h);           // world units per image pixel (at its centre)
+  if (!sph && place.iso) texel *= deriv2E(place.iso, place.c);       // place.c is a point of the image frame
 
   // `near`: tiles that come within the feather radius of F (only they get weight from the
   // domain mask). Tested on boundary samples, with the samples' spacing as slack.
@@ -187,7 +197,7 @@ export function enumerate(geo, place, img, { max = MAX_COPIES, feather = 0 } = {
 
   // start from the tile under the image centre
   let start = identity(mode);
-  const ctr = worldOfPlane(mode, place.c, pole);
+  const ctr = worldOfUV(mode, place, img, [0.5, 0.5]);
   const r = (mode !== 'hyp' || ctr[0] * ctr[0] + ctr[1] * ctr[1] < 1) ? geo.reduce(ctr) : null;
   if (r && r.ok) start = elementOfWord(geo, gens, r.word);
 
@@ -213,7 +223,9 @@ export function enumerate(geo, place, img, { max = MAX_COPIES, feather = 0 } = {
     let uvBox = null;
     if (b) {
       const pad = 0.2 * Math.max(b[2] - b[0], b[3] - b[1]);
-      const us = [[b[0] - pad, b[1] - pad], [b[2] + pad, b[1] - pad], [b[2] + pad, b[3] + pad], [b[0] - pad, b[3] + pad]].map(z => uvOfPlane(place, img, z));
+      const box = [];
+      for (const fx of [0, 0.5, 1]) for (const fy of [0, 0.5, 1]) box.push([b[0] - pad + fx * (b[2] - b[0] + 2 * pad), b[1] - pad + fy * (b[3] - b[1] + 2 * pad)]);
+      const us = box.map(z => uvOfWorld(mode, place, img, z));
       uvBox = [Math.min(...us.map(u => u[0])), Math.min(...us.map(u => u[1])), Math.max(...us.map(u => u[0])), Math.max(...us.map(u => u[1]))];
     }
     out.push({ ...E, near: nearTest(T), uvBox });
@@ -241,8 +253,7 @@ export function orbitOnImage(geo, els, place, img, x) {
   const f = r.p, out = [];
   for (const E of els) {
     const q = applyE(mode, E, f);
-    const z = planeOfWorld(mode, q, pole);
-    const uv = uvOfPlane(place, img, z);
+    const uv = uvOfWorld(mode, place, img, q);
     if (inUV(uv)) out.push({ uv, E, q });
   }
   return out;

@@ -8,6 +8,8 @@ import { SignatureEditor } from './SignatureEditor.js';
 import { Scene } from './Scene.js';
 import { MaskGPU } from './MaskGPU.js';
 import * as Saved from './Saved.js';
+import { faceGenerators, elementOfWord, compose, invertE } from './Orbits.js';
+import { Mob } from './geom.js';
 import { PRESETS } from './presets.js';
 import { makeDefaultPicture } from './textures.js';
 import * as Sig from './Signature.js';
@@ -83,6 +85,9 @@ function writeHash() {
   if (m) parts.push('m=' + [...m.c, ...(m.A || [...m.e1, ...m.e2]), m.size].map(num).join(','));
   const pl = scene.place;
   if (pl) parts.push('p=' + [...pl.c, ...pl.a, pl.flip ? 1 : 0, pl.pole || 1].map(num).join(','));
+  const n9 = v => (+v).toPrecision(9).replace(/\.?0+$/, '');
+  if (pl?.iso?.R) parts.push('r=' + pl.iso.R.map(n9).join(','));                                 // sphere: the rotation
+  else if (pl?.iso?.M) parts.push('i=' + [pl.iso.conj ? 1 : 0, ...pl.iso.M.flat()].map(n9).join(','));  // 2D: conj flag, Möbius a b c d
   history.replaceState(null, '', '#' + parts.join('&'));
 }
 function readHash() {
@@ -90,10 +95,13 @@ function readHash() {
   if (!h) return null;
   const [sig, ...rest] = h.split('&');
   const params = {};
-  let motif = null, place = null;
+  let motif = null, place = null, iso = null;
   for (const kv of rest) {
     const [k, v] = kv.split('=');
-    if (k === 'p' && v) {
+    if ((k === 'i' || k === 'r') && v) {
+      const a = v.split(',').map(Number);
+      if (a.length === 9 && a.every(Number.isFinite)) iso = k === 'r' ? { R: a } : { conj: !!a[0], M: [a.slice(1, 3), a.slice(3, 5), a.slice(5, 7), a.slice(7, 9)] };
+    } else if (k === 'p' && v) {
       const a = v.split(',').map(Number);
       if (a.length === 6 && a.every(Number.isFinite)) place = { c: a.slice(0, 2), a: a.slice(2, 4), flip: !!a[4], pole: a[5] };
     } else if (k === 'm' && v) {
@@ -104,6 +112,7 @@ function readHash() {
       }
     } else if (k && v !== undefined && Number.isFinite(+v)) params[k] = +v;
   }
+  if (place && iso) place.iso = iso;
   return { sig: sig === '-' ? '' : sig, params, motif, place };
 }
 
@@ -141,6 +150,7 @@ const toolOpts = {
   model, highlight, scene, getTool: () => currentTool,
   onOrder: (i, d) => { const t = model.tokens[i]; if (t) editor.setOrderAt(i, t.n + d); },
   onRemove: i => editor.removeAt(i),
+  onRecenter: () => recenterAll(),
   batch: fn => { holdCommit++; try { fn(); } finally { holdCommit--; } commit(); },
   onAddCone: () => editor.addCone(2),
   onCommit: () => commit(),
@@ -148,6 +158,36 @@ const toolOpts = {
 };
 const tool = new FeatureTool({ ...toolOpts, view, canvas: $('#pattern'), tip: $('#tip') });
 
+
+// ── keeping things near the middle ──────────────────────────────────────
+// (1) the view: if the canvas centre has wandered out of the fundamental domain, change world
+//     coordinates by the (orientation-preserving) group element that brings it back. The pattern
+//     is invariant, so nothing on screen moves; the placed image gets the inverse element so it stays
+//     put too. Long pans then never drift towards the hyperbolic rim, where precision runs out.
+// (2) the image: make the copy of the image that best covers the canvas centre the placed one.
+function recenterAll() {
+  const g = model.geo;
+  if (!g || !g.faces.length) return;
+  const centre = () => view.screenToWorld(view.cssToScreen(view.cssW / 2, view.cssH / 2));
+  if (g.mode !== 'sph') {
+    const x0 = centre(), r = x0 && g.reduce(x0);
+    if (r && r.ok && r.word.length) {
+      const gens = faceGenerators(g);
+      let W = elementOfWord(g, gens, r.word);
+      if (W.conj) { const G = gens.find(G => G.conj); W = G ? compose(g.mode, W, G) : null; }
+      if (W && !W.conj) {
+        view.view.V = Mob.normalize(Mob.mul(view.view.V, W.M));
+        if (scene.place && scene.place.mode === g.mode) {
+          const Wi = invertE(g.mode, W), iso = scene.place.iso ? compose(g.mode, Wi, scene.place.iso) : Wi;
+          scene.setPlace({ iso: { M: iso.M, conj: iso.conj } }, { silent: true });
+        }
+      }
+    }
+  }
+  const w = centre();
+  if (w) scene.recenter(w);
+  view.markDataDirty();
+}
 
 // ── reacting to model changes ───────────────────────────────────────────
 model.on('change', ev => {
@@ -493,5 +533,5 @@ document.addEventListener('keydown', e => {
   if (e.code === 'KeyC' && e.altKey && (e.metaKey || e.ctrlKey)) { e.preventDefault(); copyState(); }
 });
 
-window.orbipix = { model, view, scene, highlight, editor, tool, presets: PRESETS, setTool, setMode, collectState, applyState };
+window.orbipix = { model, view, scene, highlight, editor, tool, presets: PRESETS, setTool, setMode, collectState, applyState, recenterAll };
 window.model = model;

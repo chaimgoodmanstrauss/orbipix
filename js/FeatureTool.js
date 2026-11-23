@@ -13,7 +13,7 @@ import { dist2, dot3, hypLerp, hypDist, Mob, C } from './geom.js';
 import { unreduce } from './OrbifoldModel.js';
 import { motifHit, applyWord, carry } from './Motif.js';
 import { M3 } from './geom.js';
-import { planeOfWorld, planeOfUV, uvOfPlane, inUV } from './Orbits.js';
+import { planeOfWorld, planeOfUV, uvOfPlane, inUV, toImageFrame } from './Orbits.js';
 
 const isLen = n => n.endsWith('_l') || n === 'lattice_b', isTwist = n => n.endsWith('_t') || n === 'lattice_c';
 const HIT_EDGE = 7, HIT_POINT = 10, HIT_HANDLE = 12, ALT_SLOP = 6, ADD_CLEAR = 24;
@@ -170,7 +170,10 @@ export class FeatureTool {
       this._setHover(null); this._cursor(null);
       e.preventDefault(); return;
     }
-    const hit = this.hitTest(x, y);
+    let hit = this.hitTest(x, y);
+    // a cone sitting on an edge with length / twist: shift-press slides the edge (the twist), not the cone
+    const edge = hit && hit.type === 'point' ? this._paramEdgeAt(x, y) : null;
+    if (edge && e.shiftKey) hit = edge;
     const touch = e.pointerType !== 'mouse';
     if (hit && hit.type === 'motif') {
       const g = this.model.geo;
@@ -183,7 +186,7 @@ export class FeatureTool {
     } else if (hit && hit.type === 'face' && hit.params?.includes('lattice_c')) {
       this.drag = this._startShear(hit, x, y);
     } else if (hit && hit.type === 'point') {
-      this.drag = { kind: 'click', hit, x, y, alt: e.altKey || e.metaKey };
+      this.drag = { kind: 'click', hit, x, y, alt: e.altKey || e.metaKey, edge, ev: e };
     } else {
       this.drag = { kind: 'pan', last: this.view.cssToScreen(x, y), x, y, moved: false, alt: e.altKey };
       if (touch) {
@@ -258,6 +261,7 @@ export class FeatureTool {
       const u = this.view.cssToScreen(x, y);
       this.view.pan(d.last, u);
       d.last = u;
+      this.onRecenter?.();                   // keep the placed image on the canvas as the pattern slides
       this.canvas.style.cursor = 'grabbing';
     } else if (d.kind === 'param') {
       const delta = (x - d.x) - (y - d.y);
@@ -282,7 +286,12 @@ export class FeatureTool {
       this.view.hover = { type: 'handle', handle: d.handle };
       this._tip({ type: 'handle', handle: d.handle }, x, y);
     } else if (d.kind === 'click') {
-      if (Math.hypot(x - d.x, y - d.y) > 6) { this.drag = { kind: 'pan', last: this.view.cssToScreen(x, y), x, y, moved: true }; }
+      if (Math.hypot(x - d.x, y - d.y) > 6) {
+        // a drag that started on a cone: if the cone sits on an edge with a length, drag that edge;
+        // otherwise slide the pattern
+        if (d.edge) { this.drag = this._startEdgeDrag(d.edge, d.x, d.y, d.ev); this._move(e); }
+        else this.drag = { kind: 'pan', last: this.view.cssToScreen(x, y), x, y, moved: true };
+      }
     }
   }
 
@@ -294,7 +303,8 @@ export class FeatureTool {
     this.drag = null;
     if (!d) return;
     const [x, y] = this._xy(e);
-    if (d.kind === 'place' || d.kind === 'brush') { this.onCommit(); return; }
+    if (d.kind === 'place') { this.onRecenter?.(); this.onCommit(); return; }
+    if (d.kind === 'brush') { this.onCommit(); return; }
     if (d.kind === 'motif') {
       this.select(true);
       if (d.moved) this.onCommit();
@@ -346,7 +356,7 @@ export class FeatureTool {
     const g = this.model.geo; if (!g) return null;
     const w = this.view.screenToWorld(this.view.cssToScreen(x, y));
     if (!w) return null;
-    return planeOfWorld(g.mode, w, this.scene.place?.pole || 1);
+    return this.scene.place ? planeOfWorld(g.mode, toImageFrame(g.mode, this.scene.place, w), this.scene.place.pole || 1) : null;
   }
   _uvAt(x, y) {
     const z = this._plane(x, y);
@@ -441,6 +451,25 @@ export class FeatureTool {
       sc.movePlace([after.z[0] - was[0], after.z[1] - was[1]]);
     };
     if (this.batch) this.batch(run); else run();
+  }
+
+  // the edge with parameters (length / twist) under (x, y), ignoring points — or null
+  _paramEdgeAt(x, y) {
+    const g = this.model.geo, pr = this.view.probe(x, y);
+    if (!g || !pr || !pr.ok) return null;
+    const sph = g.mode === 'sph';
+    let best = null;
+    g.faces.forEach((f, i) => {
+      if (!f.params?.length) return;
+      const d = Math.abs(sph ? dot3(f.wall, pr.p) : dist2(f.wall, pr.p)) * pr.scale;
+      if (d >= HIT_EDGE + 4) return;
+      if (!sph && !f.bounds.every(b => dist2(b, pr.p) > -1e-7)) return;
+      if (!best || d < best.d) best = { type: 'face', index: i, d, probe: pr, tokens: f.tokens, params: f.params };
+    });
+    return best;
+  }
+  _startEdgeDrag(hit, x, y, e) {
+    return hit.params.includes('lattice_c') ? this._startShear(hit, x, y) : this._startParamDrag(hit, x, y, e);
   }
 
   // ── 2222: drag a folded edge. Shift-drag slides the half-turn centres along it (lattice_c):

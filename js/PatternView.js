@@ -15,7 +15,7 @@ import { Mob, C, M3, toSphere, fromSphere, norm3, cross3, dot3, hypLerp, apply2,
 import { makeCommaCanvas } from './textures.js';
 import { unreduce } from './OrbifoldModel.js';
 
-import { planeOfUV, worldOfPlane, translationLattice } from './Orbits.js';
+import { worldOfUV, translationLattice, invertE } from './Orbits.js';
 
 const MAXF = 64, WIDTH = 16;
 const EUC_CELLS_ACROSS = 2.5;      // lattice repeats across the canvas when a flat pattern opens
@@ -33,6 +33,10 @@ uniform int uMode, uNF, uNG, uFlip;
 uniform vec4 uPlace;        // image placement: c.xy, a.xy (complex)
 uniform vec2 uK;            // (L/W, L/H)
 uniform float uPole, uFeather;
+uniform vec4 uIsoI0, uIsoI1;  // the placement's isometry, inverse (2D, element form a,b | c,d) …
+uniform int uIsoConj;         // … and whether it reverses orientation
+uniform vec4 uIsoF0, uIsoF1;  // forward (2D)
+uniform mat3 uIsoRT;          // sphere: Rᵀ (world -> image frame)
 
 vec4 T(int c, int r) { return texelFetch(uData, ivec2(c, r), 0); }
 vec2 cmul(vec2 a, vec2 b){ return vec2(a.x*b.x - a.y*b.y, a.x*b.y + a.y*b.x); }
@@ -74,6 +78,21 @@ float sdom(vec2 q, vec3 Q){
   return s;
 }
 float wdom(vec2 q, vec3 Q){ return smoothstep(-uFeather, uFeather, sdom(q, Q)); }
+// world -> the image's frame (undo the placement's isometry); d = |derivative| (2D)
+void toFrame(inout vec2 q, inout vec3 Q, out float d){
+  d = 1.;
+  if (uMode == 2) { Q = uIsoRT * Q; return; }
+  vec2 Z = uIsoConj == 1 ? vec2(q.x, -q.y) : q;
+  vec2 den = cmul(uIsoI1.xy, Z) + uIsoI1.zw;
+  q = cdiv(cmul(uIsoI0.xy, Z) + uIsoI0.zw, den);
+  d = 1. / dot(den, den);
+}
+// the image's frame -> world
+void fromFrame(inout vec2 p, inout vec3 P){
+  if (uMode == 2) { P = transpose(uIsoRT) * P; return; }
+  vec2 Z = uIsoConj == 1 ? vec2(p.x, -p.y) : p;
+  p = cdiv(cmul(uIsoF0.xy, Z) + uIsoF0.zw, cmul(uIsoF1.xy, Z) + uIsoF1.zw);
+}
 // image uv -> image plane -> world (sphere: inverse stereographic from the pole)
 vec2 planeOfUV(vec2 uv){ vec2 s = vec2((uv.x - .5) * 2. / uK.x, (.5 - uv.y) * 2. / uK.y); if (uFlip == 1) s.y = -s.y; return uPlace.xy + cmul(uPlace.zw, s); }
 vec3 sphOfPlane(vec2 z){ float q = dot(z, z); return vec3(2. * z, uPole * (q - 1.)) / (1. + q); }
@@ -152,14 +171,16 @@ vec4 orbitColor(vec2 p, vec3 P, float pxw){
     vec4 t3 = E(3, e);
     vec2 q; vec3 Q; float gd;
     applyEl(e, p, P, q, Q, gd);
-    vec2 uv = uvOf(planeOf(q, Q));
+    vec2 qf = q; vec3 Qf = Q; float fd;
+    toFrame(qf, Qf, fd);
+    vec2 uv = uvOf(planeOf(qf, Qf));
     if (!inImg(uv)) continue;
     float w = 0.;
     if (contra) {
       w = uMaskMode == 1 ? maskAt(uv) : (t3.y > 0.5 ? wdom(q, Q) : 0.);
       if (w <= 0. && !near) continue;
     }
-    vec4 c = textureLod(uImg, uv, log2(max(gd * planeD(Q) * uTexPer * pxw, 1.)));
+    vec4 c = textureLod(uImg, uv, log2(max(gd * fd * planeD(Qf) * uTexPer * pxw, 1.)));
     if (uAvg == 3) { if (c.a > 0.5) return vec4(c.rgb, 1.); continue; }
     cnt += 1.; sumc += c.a * c.rgb; suma += c.a;
     if (uAvg == 1) {
@@ -304,10 +325,12 @@ void main(){
     // ── adjusting: the pattern a little desaturated, the image over it where it lies,
     //    fully where its weight is high, at 30% where the mask is dark ──
     col = mix(vec3(dot(col, vec3(0.299, 0.587, 0.114))), col, 0.65);
-    vec2 uv = uvOf(planeOf(p0, P0));
+    vec2 pf = p0; vec3 Pf = P0; float fd;
+    toFrame(pf, Pf, fd);
+    vec2 uv = uvOf(planeOf(pf, Pf));
     if (inImg(uv)) {
       float pxr = sph ? 1. / uS : J / uS;
-      vec4 c = textureLod(uImg, uv, log2(max(planeD(P0) * uTexPer * pxr, 1.)));
+      vec4 c = textureLod(uImg, uv, log2(max(fd * planeD(Pf) * uTexPer * pxr, 1.)));
       float w = uAvg == 3 ? 1. : uMaskMode == 1 ? maskAt(uv) : wdom(p0, P0);
       col = mix(col, c.rgb, mix(0.3, 1., clamp(w, 0., 1.)) * c.a);
     }
@@ -419,6 +442,16 @@ void main(){
   col = mix(col, paper, uDim);
   outColor = vec4(col, 1.);
 }`;
+
+// the placement's isometry as shader uniforms (identity when there is none)
+export function isoUniforms(mode, iso) {
+  const id = { i0: [1, 0, 0, 0], i1: [0, 0, 1, 0], f0: [1, 0, 0, 0], f1: [0, 0, 1, 0], conj: 0, R: [1, 0, 0, 0, 1, 0, 0, 0, 1] };
+  if (!iso) return id;
+  if (mode === 'sph') return { ...id, R: iso.R || id.R };
+  if (!iso.M) return id;
+  const inv = invertE(mode, iso), m = iso.M, n = inv.M;
+  return { ...id, f0: [...m[0], ...m[1]], f1: [...m[2], ...m[3]], i0: [...n[0], ...n[1]], i1: [...n[2], ...n[3]], conj: iso.conj ? 1 : 0 };
+}
 
 // state that lives with the shared WebGL context, not with one view
 const SHARED = ['gl', 'prog', 'vao', 'uni', 'cacheProg', 'cacheUni', 'domTex', 'domFbo', 'domKey', 'domW', 'domH', 'chart', 'chartKey', 'dataTex', 'motifTex', 'imgTex', 'elTex', '_imgVer', '_elVer', '_ng', '_nnear', '_counts', '_uploadedVersion', '_dataDirty'];
@@ -784,6 +817,10 @@ export class PatternView {
     const pl = sc.place, L = Math.max(sc.img.w, sc.img.h), ch = this.chart;
     set('uFlip', '1i', pl.flip ? 1 : 0); set('uPlace', '4f', pl.c[0], pl.c[1], pl.a[0], pl.a[1]);
     set('uK', '2f', L / sc.img.w, L / sc.img.h); set('uPole', '1f', pl.pole || 1);
+    const iso = isoUniforms(mode, pl.iso);
+    set('uIsoI0', '4f', ...iso.i0); set('uIsoI1', '4f', ...iso.i1); set('uIsoF0', '4f', ...iso.f0); set('uIsoF1', '4f', ...iso.f1);
+    set('uIsoConj', '1i', iso.conj);
+    if (U.uIsoRT) gl.uniformMatrix3fv(U.uIsoRT, false, new Float32Array(iso.R));
     set('uTexPer', '1f', L / (2 * Math.hypot(pl.a[0], pl.a[1]))); set('uFeather', '1f', sc.featherRadius());
     if (ch) {
       set('uChart', '4f', ...ch.box); set('uChC', '3f', ...ch.c); set('uChE1', '3f', ...ch.e1); set('uChE2', '3f', ...ch.e2);
@@ -986,7 +1023,7 @@ export class PatternView {
       for (let e = 0; e < 4; e++) for (let i = 0; i <= N; i++) {
         const t = i / N;
         const uv = [[t, 0], [1, t], [1 - t, 1], [0, 1 - t]][e];
-        const w = worldOfPlane(g.mode, planeOfUV(sc.place, sc.img, uv), pole);
+        const w = worldOfUV(g.mode, sc.place, sc.img, uv);
         const c = (g.mode === 'hyp' && w[0] * w[0] + w[1] * w[1] >= 1) ? null : toCss(w);
         if (!c) { pen = false; continue; }
         if (pen) ctx.lineTo(c[0], c[1]); else ctx.moveTo(c[0], c[1]);
