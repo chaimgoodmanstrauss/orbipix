@@ -90,6 +90,23 @@ export class SignatureEditor {
     this.onChange(Sig.stringify(this.tokens), { commit: true });
   }
 
+  // remove token i (an alt-click on a 2-fold point)
+  removeAt(i) {
+    if (!this.tokens[i]) return;
+    this.tokens.splice(i, 1);
+    this.caret = Math.min(this.caret, this.tokens.length);
+    this._emit();
+  }
+  // add a gyration point of order n, after any handles; returns its token index
+  addCone(n = 2) {
+    let i = 0;
+    while (this.tokens[i] && this.tokens[i].kind === 'o') i++;
+    this.tokens.splice(i, 0, { kind: 'cone', n });
+    this.caret = i + 1;
+    this._emit();
+    return i;
+  }
+
   insert(kind) {
     let t;
     if (kind === 'o' || kind === 'x' || kind === '*') t = { kind };

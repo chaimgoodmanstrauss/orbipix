@@ -13,9 +13,9 @@ import { dist2, dot3, hypLerp, hypDist, Mob, C } from './geom.js';
 import { unreduce } from './OrbifoldModel.js';
 import { motifHit, applyWord, carry } from './Motif.js';
 import { M3 } from './geom.js';
-import { planeOfWorld, uvOfPlane, inUV } from './Orbits.js';
+import { planeOfWorld, planeOfUV, uvOfPlane, inUV } from './Orbits.js';
 
-const HIT_EDGE = 7, HIT_POINT = 10, HIT_HANDLE = 12;
+const HIT_EDGE = 7, HIT_POINT = 10, HIT_HANDLE = 12, ALT_SLOP = 6, ADD_CLEAR = 24;
 const LENGTH_DRAG_SPEED = 0.005, TWIST_DRAG_SPEED = 0.002;
 const LENGTH_WHEEL_STEP = 0.03, TWIST_WHEEL_STEP = 0.01;
 
@@ -131,7 +131,8 @@ export class FeatureTool {
     if (hit.type === 'motif') return this.selected ? 'the comma (selected) — drag to move every copy; Esc deselects' : 'the comma — click to select, drag to move every copy';
     if (hit.type === 'point') {
       const p = g.points[hit.index];
-      return p.kind === 'cone' ? `gyration point ${p.n} — click +1, alt-click −1` : `corner ${p.n}: ${p.n} mirrors meet — click +1, alt-click −1`;
+      const alt = p.n === 2 ? 'alt-click removes it' : 'alt-click −1';
+      return p.kind === 'cone' ? `gyration point ${p.n} — click +1, ${alt}` : `corner ${p.n}: ${p.n} mirrors meet — click +1, ${alt}`;
     }
     if (hit.type === 'inner') return `cut · ${lt(hit.params)} — drag${hit.params.length > 1 ? ', shift-drag twists' : ''}`;
     const f = g.faces[hit.index];
@@ -181,7 +182,7 @@ export class FeatureTool {
     } else if (hit && hit.type === 'point') {
       this.drag = { kind: 'click', hit, x, y, alt: e.altKey || e.metaKey };
     } else {
-      this.drag = { kind: 'pan', last: this.view.cssToScreen(x, y), x, y, moved: false };
+      this.drag = { kind: 'pan', last: this.view.cssToScreen(x, y), x, y, moved: false, alt: e.altKey };
       if (touch) {
         clearTimeout(this._lp);
         this._lp = setTimeout(() => { if (this.drag && this.drag.kind === 'pan' && !this.drag.moved) { this.drag = null; this._setHover(this.hitTest(x, y), x, y); } }, 450);
@@ -248,7 +249,9 @@ export class FeatureTool {
     }
     if (d.kind === 'brush') { this._brushAt(x, y); return; }
     if (d.kind === 'pan') {
-      if (Math.hypot(x - d.x, y - d.y) > 3) { d.moved = true; clearTimeout(this._lp); this._tip(null); }
+      const far = Math.hypot(x - d.x, y - d.y);
+      if (d.alt && !d.moved && far <= ALT_SLOP) return;          // an alt-click wobbles a little: it is still a click
+      if (far > 3) { d.moved = true; clearTimeout(this._lp); this._tip(null); }
       const u = this.view.cssToScreen(x, y);
       this.view.pan(d.last, u);
       d.last = u;
@@ -289,13 +292,20 @@ export class FeatureTool {
     if (d.kind === 'motif') {
       this.select(true);
       if (d.moved) this.onCommit();
+    } else if (d.kind === 'pan' && !d.moved && e.type === 'pointerup' && d.alt) {
+      this._addCone(d.x, d.y);                 // alt-click on open ground: a new gyration point there
+      return;
     } else if (d.kind === 'pan' && !d.moved && e.type === 'pointerup' && this.selected) {
       this.select(false);
     }
     if (d.kind === 'click' && e.type === 'pointerup') {
       const p = this.model.geo.points[d.hit.index];
       const tk = (p.tokens || []).find(i => ['cone', 'corner'].includes(this.model.tokens[i]?.kind));
-      if (tk !== undefined) this._changeOrder(tk, d.alt ? -1 : 1, d.hit, d.x, d.y);
+      if (tk !== undefined && d.alt && p.n === 2) {        // alt-click a 2-fold point: gone (the image stays put under the pointer)
+        this._withImagePinned(d.x, d.y, () => this.onRemove?.(tk));
+        this._setHover(this.hitTest(x, y), x, y);
+      }
+      else if (tk !== undefined) this._changeOrder(tk, d.alt ? -1 : 1, d.hit, d.x, d.y);
     } else if (d.kind === 'param' || d.kind === 'handle') {
       this.model.refresh();
       this.onCommit();
@@ -380,6 +390,60 @@ export class FeatureTool {
     if (g.mode === 'hyp' && w[0] * w[0] + w[1] * w[1] >= 0.999) w = pt.pos;
     this.view.placeAt(w, cx, cy);
     this._setHover(this.hitTest(cx, cy), cx, cy);
+  }
+
+  // a new 2-fold gyration point, placed under (x, y) — only on open ground: nothing of the
+  // pattern's (point, edge) within reach
+  _addCone(x, y) {
+    const g0 = this.model.geo;
+    if (!g0 || this.model.isBad() || !this.onAddCone) return;
+    const pr = this.view.probe(x, y);
+    if (!pr || !pr.ok) return;
+    const near = g0.points.some(pt => Math.hypot(...pt.pos.map((v, k) => v - pr.p[k])) * pr.scale < ADD_CLEAR);
+    if (near || this.hitTest(x, y)) { this._say('Too close to a point or edge for a new gyration point', x, y); return; }
+    this._withImagePinned(x, y, () => {
+      const i = this.onAddCone();
+      const g = this.model.geo;
+      if (i === undefined || !g || this.model.isBad()) return;
+      const pt = g.points.find(p => (p.tokens || []).includes(i)) || g.points.find(p => p.kind === 'cone' && p.n === 2);
+      if (pt) this.view.placeAt(pt.pos, x, y);
+    });
+    this._setHover(this.hitTest(x, y), x, y);
+  }
+
+  // Run change() (a signature change, maybe moving the view), then move and scale the image so the
+  // spot of the image that was under (x, y) is under it again, at the same size on screen.
+  // The whole thing is one undo step.
+  _withImagePinned(x, y, change) {
+    const sc = this.scene;
+    const at = () => {                         // image-plane point under (x, y), and plane units per css px
+      const z = this._plane(x, y), z1 = this._plane(x + 1, y);
+      return z && z1 ? { z, k: Math.hypot(z1[0] - z[0], z1[1] - z[1]) } : null;
+    };
+    const before = sc?.img && sc.place ? at() : null;
+    const uv = before ? uvOfPlane(sc.place, sc.img, before.z) : null;
+    const a0 = before ? [...sc.place.a] : null, flip0 = before ? sc.place.flip : false;
+    const run = () => {
+      change();
+      if (!before || this.model.isBad() || !sc.place) return;
+      if (sc.place.mode !== this.model.geo.mode) sc.elements();        // a new geometry refits the image first
+      const after = at();
+      if (!after || !(before.k > 0) || !(after.k > 0)) return;
+      // same turn and flip as before, sized so the spot looks the same size; then slid into place
+      sc.setPlace({ a: [a0[0] * after.k / before.k, a0[1] * after.k / before.k], flip: flip0 }, { silent: true });
+      const was = planeOfUV(sc.place, sc.img, uv);
+      sc.movePlace([after.z[0] - was[0], after.z[1] - was[1]]);
+    };
+    if (this.batch) this.batch(run); else run();
+  }
+
+  // a short message by the pointer
+  _say(text, x, y) {
+    const t = this.tip;
+    t.textContent = text; t.hidden = false;
+    t.style.transform = `translate(${Math.max(4, x + 16)}px, ${Math.max(4, y + 18)}px)`;
+    clearTimeout(this._sayT);
+    this._sayT = setTimeout(() => { t.hidden = true; }, 1600);
   }
 
   _startPinch() {

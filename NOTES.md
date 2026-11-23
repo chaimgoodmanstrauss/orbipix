@@ -4,9 +4,10 @@ Bitmap patterns by **contravariant distributions** (C. Goodman-Strauss, patent d
 producing symmetric patterns with contravariant distributions"), built on a copy of Orbiscope
 (`../orbiscope`, commit 592941e) for the orbifold engine, signature editor and feature dragging.
 
-Run: from `orbipix/`, `python3 tools/serve.py <port>` and open `http://localhost:<port>/` (use this,
-not a plain `http.server`, for the "browser" trigger: it also receives shared states).
-Console: `window.orbipix` (`model`, `view`, `sview`, `scene`, `setTool`, `setView`, …).
+Run: `python3 tools/serve.py <port>` and open `http://localhost:<port>/`. It is `http.server` with
+`Cache-Control: no-store`. Plain `http.server` lets Chrome keep stale ES modules after a reload, which
+is why an option-click fix seemed not to work on 2026-11-23. Use it for the "browser" trigger too.
+Console: `window.orbipix` (`model`, `view`, `scene`, `tool`, `setTool`, `setMode`, `collectState`, `applyState`, …).
 Checks: `node tools/browser-check.mjs <url> [steps.json]`; `node --import ./tools/register.mjs tools/test-model.mjs`.
 Deploy (not yet done): `./deploy.sh` → https://chaimgoodmanstrauss.com/orbipix/.
 
@@ -99,6 +100,30 @@ hyperbolic), then alt-click back to `273`; the point stays within 0.32 px of the
   Saved 0.5 s after any change: commits, view moves, sliders, checkboxes, mode and tool.
 - On load, the saved state wins unless the URL carries a different `#…` state (a shared link). Then
   the URL's signature, parameters and placement are used.
+
+## Alt-click to remove or add points (2026-11-23)
+
+- **Alt-click a 2-fold point** (cone or corner) removes it from the signature
+  (`SignatureEditor.removeAt`); on other orders alt-click still lowers by one. The tooltip says
+  which.
+- **Alt-click open ground** (Navigate mode; no point within 24 px and no edge or feature under the
+  pointer) adds a 2-fold gyration point (`SignatureEditor.addCone`, after any `o`s) and moves the view
+  so the new cone sits under the pointer. Click it to raise it, alt-click to lower it, and at 2 alt-click
+  removes it. Checked: `*2223` → `2*2223` (new cone 0.00 px from the click) → `3*2223` →
+  `2*2223` → `*2223`, and `344` → `2344`. An alt-click on the 2-corner of `*2223` gives `*223`
+  (sphere).
+- **The image is pinned under the pointer** when a cone is added or removed
+  (`FeatureTool._withImagePinned`). The image point under the click stays under it at the same size
+  on screen, with the same turn and flip, even across a change of geometry (the refit is overridden).
+  The signature change and the image move are one undo step (`batch` in `main.js` holds `commit`).
+  Checked: `344` ⇄ `2344`, and `3*2` (sphere) → `23*2` (hyperbolic). The image coordinate under the
+  pointer and the image pixels per screen pixel are unchanged to 4 digits. Order changes (click / wheel
+  on a point) do not do this yet.
+- Fitted image size: `FIT = 0.4` in `Scene.fit` (40% of the first version's size).
+- If the new signature is not a pattern (e.g. a lone `2`), it shows faded as usual and nothing moves.
+- An alt-click may wobble up to 6 px (`ALT_SLOP`) and still count as a click. The view does not move
+  until it goes further, so a small wobble no longer turns the sphere or kills the click (the
+  "conflict" seen on `3*2`). A refused alt-click (too near a point or edge) says so in the tooltip.
 
 ## Decisions
 

@@ -51,7 +51,9 @@ function saveSoon() {
     Saved.set('mask', scene.maskSnapshot());
   }, 500);
 }
+let holdCommit = 0;            // > 0 while a compound change runs (one undo step for the lot)
 function commit() {
+  if (holdCommit) return;
   saveSoon();
   const s = snap();
   if (!same(undo[undo.length - 1], s)) { undo.push(s); if (undo.length > UNDO_MAX) undo.shift(); redo.length = 0; }
@@ -133,6 +135,9 @@ function loadPreset(p) {
 const toolOpts = {
   model, highlight, scene, getTool: () => currentTool,
   onOrder: (i, d) => { const t = model.tokens[i]; if (t) editor.setOrderAt(i, t.n + d); },
+  onRemove: i => editor.removeAt(i),
+  batch: fn => { holdCommit++; try { fn(); } finally { holdCommit--; } commit(); },
+  onAddCone: () => editor.addCone(2),
   onCommit: () => commit(),
   onBrushSize: f => setBrush(scene.settings.brush * f),
 };
@@ -173,7 +178,7 @@ function renderHint() {
   const m = g.mode === 'hyp' ? 'Poincaré disk: drag empty space to slide the plane, hover edges to reshape'
     : g.mode === 'euc' ? 'The flat plane: drag to slide, wheel to zoom' + (g.handles.some(h => !h.fixed) ? ', round handles reshape the lattice' : '; this lattice is rigid')
       : 'A sphere: drag to turn it, wheel to zoom';
-  $('#hint').textContent = m + ' · 0 resets the view.';
+  $('#hint').textContent = m + ' · alt-click open ground for a new gyration point · 0 resets the view.';
 }
 
 function renderParams() {

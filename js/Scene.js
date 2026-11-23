@@ -18,6 +18,7 @@ import { enumerate, planeOfWorld, featherUnit } from './Orbits.js';
 import { C } from './geom.js';
 
 const MAX_IMG = 2048, MAX_MASK = 1024;
+const FIT = 0.4;          // the fitted image's size, relative to the first version's (domain mid-image, image twice its size)
 
 export class Scene {
   constructor(model) {
@@ -76,16 +77,16 @@ export class Scene {
   fit() {
     const g = this.model.geo;
     if (!g || !this.img) return;
-    if (g.mode === 'hyp') this.place = { c: [0, 0], a: [0.78, 0], flip: false, pole: 1 };
+    if (g.mode === 'hyp') this.place = { c: [0, 0], a: [0.78 * FIT, 0], flip: false, pole: 1 };
     else if (g.mode === 'euc') {
       const pts = g.faces.flatMap(f => f.ends || []).filter(Boolean);
       const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
       const d = pts.length ? Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) : 1;
-      this.place = { c: [...g.comma.c], a: [1.25 * d, 0], flip: false, pole: 1 };
+      this.place = { c: [...g.comma.c], a: [1.25 * d * FIT, 0], flip: false, pole: 1 };
     } else {
       const cc = g.comma.c, pole = cc[2] > 0 ? -1 : 1;
       const z = planeOfWorld('sph', cc, pole), q = 1 + z[0] * z[0] + z[1] * z[1];
-      this.place = { c: z, a: [0.95 * q / 2, 0], flip: false, pole };
+      this.place = { c: z, a: [0.95 * q / 2 * FIT, 0], flip: false, pole };
     }
     this.place.mode = g.mode;
     this._invalidate();
