@@ -117,7 +117,7 @@ hyperbolic), then alt-click back to `273`; the point stays within 0.32 px of the
   (iso ← V_after⁻¹ ∘ V_before ∘ iso), so the whole image is unchanged on screen and rigid in the
   metric. New geometry: the image is refitted, then, only if the click was on the image, scaled and
   slid so that spot is under the pointer at the same size. An image left touching no copy of the
-  domain is refitted. The signature change and the image move are one undo step (`batch` in `main.js`).
+  domain is refitted (`Scene.elements`, for any cause: saved state, shared link, old bug). The signature change and the image move are one undo step (`batch` in `main.js`).
   Fixed 2026-11-23: the old version always pinned the image point under the click, even off the image,
   with Euclidean scale and slide in the disk; a few alt-clicks on open ground sent the image out of
   the disk entirely (c ≈ (−1.9, −4.0), 0 copies). Checked: `344` → `2344` → `22344` → `222344`, image
@@ -189,6 +189,20 @@ geometry restores them instead of refitting or resetting. Checked: typing `*2223
   speckled rim rendering became clean, with the same layout, and Adjust mode shows the image at the
   centre.
 - During a Move-tool drag the image follows the pointer; it is re-centred only on release.
+
+## The image never leaves the disk (2026-11-23)
+
+- In the disk the image's centre is the origin of its own frame (`place.c = 0`), and where it sits is
+  carried by `place.iso` alone. Every move is an isometry: drag (`slidePlace`), turn, wheel scale
+  (`scalePlace`: scale about the centre, then a rigid slide so the point under the pointer stays), and
+  the cone add/remove pin. So the image cannot leave the disk.
+- `Scene._canonHyp` (run by `setPlace`) re-expresses any placement with c ≠ 0 (old saved states,
+  links, the plane-style pin after a change of geometry): frame ← τ_c, a ← a/(1 − |c|²), exact at the
+  centre. A c outside the disk is refitted, and so is any placement whose image touches no copy of the
+  domain (`Scene.elements`; e.g. one too large for the 768-element cap).
+- A drag can't take the image centre past |w| = 0.995. On release, wheel stop, and cone add/remove,
+  `recenterAll` makes the copy nearest the canvas centre (kept in F, near the origin) the placed one.
+  Checked: four hard drags toward a corner end with the centre at |w| ≤ 0.70.
 
 ## Twist slides ignore cones (2026-11-23)
 

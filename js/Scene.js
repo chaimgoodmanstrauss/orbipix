@@ -121,10 +121,37 @@ export class Scene {
     return true;
   }
 
-  setPlace(p, { silent = false } = {}) { this.place = { ...this.place, ...p }; this._invalidate(); if (!silent) this.emit('place'); }
+  setPlace(p, { silent = false } = {}) {
+    this.place = { ...this.place, ...p };
+    this._canonHyp();
+    this._invalidate(); if (!silent) this.emit('place');
+  }
+  // In the disk the image's centre is kept at the origin of its own frame (c = 0), and where it sits is
+  // carried wholly by the isometry iso. Moves are isometries, so the image can never leave the disk.
+  // A placement with c ≠ 0 (old states, links, the plane-style pin after a change of geometry) is
+  // re-expressed: frame ← τ_c (the disk translation taking 0 to c), a ← a / (1 − |c|²), exact at the
+  // centre. One with c outside the disk cannot be seen at all and is refitted.
+  _canonHyp() {
+    const pl = this.place;
+    if (!pl || pl.mode !== 'hyp' || !pl.c) return;
+    const r2 = pl.c[0] * pl.c[0] + pl.c[1] * pl.c[1];
+    if (r2 < 1e-24) return;
+    if (r2 >= 0.999 * 0.999) { this.fit(); return; }
+    const iso = compose('hyp', pl.iso || identity('hyp'), tau(pl.c));
+    this.place = { ...pl, c: [0, 0], a: C.scale(pl.a, 1 / (1 - r2)), iso: { M: iso.M, conj: iso.conj } };
+  }
   // move / scale / turn about an image-plane point
   movePlace(dz) { this.setPlace({ c: C.add(this.place.c, dz) }); }
-  scalePlace(f, about) { this.setPlace({ c: C.add(about, C.scale(C.sub(this.place.c, about), f)), a: C.scale(this.place.a, f) }); }
+  scalePlace(f, about) {
+    if (this.place.mode === 'hyp') {        // scale about the centre, then slide rigidly so `about` stays put
+      const z = C.add(this.place.c, C.scale(C.sub(about, this.place.c), f));
+      this.setPlace({ a: C.scale(this.place.a, f) }, { silent: true });
+      const E = C.abs(z) < 0.999 && C.abs(about) < 0.999 ? hypSlide(z, about) : null;
+      if (E) this._isoAfter(E); else this.emit('place');
+      return;
+    }
+    this.setPlace({ c: C.add(about, C.scale(C.sub(this.place.c, about), f)), a: C.scale(this.place.a, f) });
+  }
   turnPlace(rot, about) { this.setPlace({ c: C.add(about, C.mul(C.sub(this.place.c, about), rot)), a: C.mul(this.place.a, rot) }); }
   flip() { this.setPlace({ flip: !this.place.flip }); }
   // Drag / turn the image rigidly in the geometry's own metric. In the plane, moving c is an isometry;
@@ -134,7 +161,12 @@ export class Scene {
     const mode = this.place.mode;
     if (mode !== 'hyp' && mode !== 'sph') { this.movePlace(C.sub(to, from)); return; }
     const E = mode === 'hyp' ? hypSlide(from, to) : sphSlide(worldOfPlane('sph', from, this.place.pole || 1), worldOfPlane('sph', to, this.place.pole || 1));
-    if (E) this._isoAfter(E);
+    if (!E) return;
+    if (mode === 'hyp') {                    // keep the image's centre off the very rim (it is re-centred on release)
+      const iso = compose('hyp', this.place.iso || identity('hyp'), E), w = applyE('hyp', iso, this.place.c);
+      if (w[0] * w[0] + w[1] * w[1] > 0.995 * 0.995) return;
+    }
+    this._isoAfter(E);
   }
   turnPlaceRigid(t, about) {
     const mode = this.place.mode;
@@ -166,6 +198,13 @@ export class Scene {
       this._els = enumerate(g, this.place, this.img, { feather: fr });
       this._elsKey = key;
       this.elVersion++;
+      // An image touching no copy of the domain lies wholly outside the world (in the disk model:
+      // outside the unit circle), so nothing can sample it. However it got there (an old bug, a saved
+      // state, a shared link), refit it. Once only, in case it is still empty after the refit.
+      if (!this._els.list.length && !this._refitting) {
+        this._refitting = true;
+        try { this.fit(); return this.elements(); } finally { this._refitting = false; }
+      }
     }
     return this._els;
   }

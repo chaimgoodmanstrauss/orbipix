@@ -469,6 +469,7 @@ export class FeatureTool {
         }
       }
       if (sc.img && !sc.elements().list.length) sc.fit();
+      this.onRecenter?.();                     // the copy of the image nearest the middle becomes the placed one
     };
     if (this.batch) this.batch(run); else run();
   }
@@ -550,7 +551,7 @@ export class FeatureTool {
       const z = this._plane(x, y);
       if (z) {
         this.scene.scalePlace(Math.exp(-e.deltaY * 0.0012), z);
-        clearTimeout(this._wheelCommit); this._wheelCommit = setTimeout(() => this.onCommit(), 400);
+        clearTimeout(this._wheelCommit); this._wheelCommit = setTimeout(() => { this.onRecenter?.(); this.onCommit(); }, 400);
       }
       return;
     }
